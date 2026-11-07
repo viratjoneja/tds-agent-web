@@ -1,5 +1,6 @@
-# Protean return files must keep their exact bytes (Windows line endings): never convert them.
-*.txt.golden -text
-web/test/fixtures/*.txt -text
+# Protean return files and test inputs must keep their exact bytes: never convert line endings.
+test/fixtures/*.txt -text
+test/fixtures/*.csi -text
+test/fixtures/*.err -text
 *.fvu -text
 *.csi -text
