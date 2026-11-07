@@ -1,0 +1,5 @@
+# Protean return files must keep their exact bytes (Windows line endings): never convert them.
+*.txt.golden -text
+web/test/fixtures/*.txt -text
+*.fvu -text
+*.csi -text

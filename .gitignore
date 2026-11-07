@@ -1,0 +1,16 @@
+node_modules/
+dist/
+# Client data must never be committed. Test fixtures are made up and allowed explicitly.
+*.xlsx
+*.xls
+*.csi
+*.fvu
+*.pdf
+*.txt
+*.err
+*.html
+!test/fixtures/*.xlsx
+!test/fixtures/*.txt
+!test/fixtures/*.csi
+!test/fixtures/*.err
+!test/fixtures/*.html

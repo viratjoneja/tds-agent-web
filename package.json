@@ -1,0 +1,13 @@
+{
+  "name": "tds-agent-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser version of the TDS agent. Frozen core from tds-agent 2.6.0 (Protean FVU 1.2 layout) plus web-only features.",
+  "type": "module",
+  "scripts": {
+    "test": "node test/parity.test.ts"
+  },
+  "dependencies": {
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  }
+}
