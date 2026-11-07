@@ -1,0 +1,3 @@
+4^Regular^Rate at which Tax Deducted / Collected^1^1^T-FV-4092^Valid Rate at which Tax Deducted / Collected must be provided 
+3^Regular^Date on which amount deposited through challan/ Date of transfer voucher ^1^^T-FV-3040^Invalid Date of Bank Challan. Date should be in ddmmyyyy format and cannot be a future date  
+4^Regular^Deductee / Collectee Code^1^1^T_FV_6417^Deductee / Collectee Code is Mandatory

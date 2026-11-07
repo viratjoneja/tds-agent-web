@@ -18,6 +18,8 @@ Four files follow this brief. Put them in `src/core/` **exactly as given** and i
 | `src/core/inputWorkbook.ts` | `makeTemplate(form)` → blank input .xlsx bytes; `readInputWorkbook(bytes, form, quarter)` → `{challans, deductor, salary, missing}` |
 | `src/core/review.ts` | `reviewModel(lines)` → totals, problems, points to review, deductor details, challan / deductee / salary tables |
 | `src/core/template_columns.json` | column headings shared with the Python tool |
+| `src/core/csi.ts` | **Phase 1.** `parseCsi(text, fileName)` → CSI header info (challan count, TAN, name, download date, valid file name); `checkCsi(csi, lines, TARGET_FVU)` → findings `{level: 'error'│'warning'│'info', message}` |
+| `src/core/fvuResult.ts` | **Phase 1.** `readErrFile(text, lines)`, `readWarningFile(html, lines)` → issues tied to the challan / deductee / employee row with a plain-English `hint`; `readStatistics(html)`, `compareStatistics(stats, rv.totals)` |
 
 The core imports each other with `.ts` extensions (e.g. `from './protean.ts'`): enable `"allowImportingTsExtensions": true` and `"noEmit": true` in `tsconfig.json` (Vite handles this), or remove the extensions if your setup needs that — change nothing else. The JSON import uses `with { type: 'json' }`; if the toolchain objects, change it to a plain `import cols from './template_columns.json'`.
 
@@ -64,6 +66,17 @@ npm install https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
    4. Upload the `.fvu` on the e-filing portal (DSC/EVC) yourself.
    5. Form 138 Q4: dates of employment and challans cannot be in the future, so a Q4 return validates only after 31 March.
 
+## Phase 1 additions (CSI checks and FVU results)
+
+**A. CSI upload — add to step 2 (Upload).** Optional file input "CSI file from the e-filing portal (.csi)". Read it as text (`TextDecoder('latin1')`), `csi = parseCsi(text, file.name)` (show its error plainly if it is not a CSI). After the return is built, run `checkCsi(csi, lines, TARGET_FVU)` and show the findings on the Review → Summary tab: `error` in red (**disable the return-file download** while any CSI error exists), `warning` in amber, `info` in grey. Explain under the upload box: *"The CSI lists the challans the bank reported. Its challan lines are encoded, so only Protean's FVU can match each challan; this tool checks the TAN, the number of challans and whether the CSI is recent enough."* Add a button **"Download CSI with a valid name"** that saves the same bytes as `csi.validName` (the FVU rejects names with spaces or brackets, e.g. `ABCD12345E101026 (1).csi`).
+
+**B. New step 7 — "FVU results"** (after Download). Text: *"Ran Protean's FVU? Upload what it produced and we'll show which row to fix."* Three optional file inputs, any combination:
+- `.err` file (FVU found errors) → `readErrFile(text, lines)`
+- `…_Electronic_Statement_Warning_File.html` → `readWarningFile(html, lines)`
+- statistics report `<name>.html` → `readStatistics(html)` then `compareStatistics(stats, rv.totals)`
+
+Read all three with `TextDecoder('latin1')`. Show one table of issues: Errors first (red), then Warnings (amber); columns: Row (`where`), FVU code, FVU message, **What to do** (`hint`, or "See the FVU message" when empty). Group identical codes with a count ("T-FV-4015 × 79"). If the statistics agree with the return, show a green "FVU totals match the return"; otherwise list the differences. Keep the built `lines` in memory so this step works without rebuilding; if the page was reloaded, ask the user to rebuild first. Never offer to edit the `.txt` — fixes are made in the input workbook, then rebuild.
+
 ## Text to show on every page (footer)
 
 "Prepares draft return files only. It is not tax advice. A qualified person must review every return before it is filed. Built for Protean FVU version 1.2 (`TARGET_FVU` in the core); if Protean releases a newer FVU, check for an updated version of this tool."
@@ -81,6 +94,12 @@ Test files are in the repository at `web/test/fixtures/` (made-up data): `f140.x
 For each: upload, build, download the `.txt`, and compare with the expected file. They must be identical **except field 5 of line 1** (the creation date, today's date as DDMMYYYY). The review must show no problems. Also check: uploading a workbook with a blank section code lists it under "fill these in"; Form 138 Q4 with a new-regime employee whose HRA is filled is reported as a problem and the download is disabled.
 
 The core can also be checked from a terminal: `node web/test/parity.test.ts` (Node 22.6+; compares the TypeScript output with the Python tool's).
+
+### Phase 1 acceptance tests
+Files in `test/fixtures/` (made up): with `f143.xlsx` built for Q2 (RRR `770000000000001`):
+- Upload `ABCD12345E101026.csi` → no CSI errors; renamed to `ABCD12345E101026.csi` if uploaded as `ABCD12345E101026 (1).csi`.
+- FVU results: `sample.err` → 3 errors, the first tied to "Challan 1, row 1: E SCRAP TRADERS…" with the 4-decimal hint; `sample_Electronic_Statement_Warning_File.html` → 1 warning (challan not in CSI) with its hint; `sample_stats.html` → "FVU totals match the return".
+The same checks run from a terminal: `node test/phase1.test.ts`.
 
 ## Hosting on an existing site
 

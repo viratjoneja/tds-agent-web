@@ -30,7 +30,7 @@ Node 22.6 or later. `npm install`, then `node test/parity.test.ts`.
 | Phase | What | Status |
 |---|---|---|
 | 0 | Separate repo with the frozen core and its tests | done |
-| 1 | CSI checks (TAN, challan count, stale CSI, file name) and FVU result reader | in progress |
+| 1 | CSI checks (TAN, challan count, stale CSI, file name) and FVU result reader | done (1.1.0) |
 | 2 | Section codes worked out from the section as written in the working | planned |
 | 3 | Rows matched to challans by rules; challan matching review page | planned |
 | 4 | AI layer: read challan PDFs; propose adjustments for exceptions (needs decisions: provider, data handling) | planned |

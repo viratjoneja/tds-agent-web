@@ -18,6 +18,8 @@ Four files follow this brief. Put them in `src/core/` **exactly as given** and i
 | `src/core/inputWorkbook.ts` | `makeTemplate(form)` → blank input .xlsx bytes; `readInputWorkbook(bytes, form, quarter)` → `{challans, deductor, salary, missing}` |
 | `src/core/review.ts` | `reviewModel(lines)` → totals, problems, points to review, deductor details, challan / deductee / salary tables |
 | `src/core/template_columns.json` | column headings shared with the Python tool |
+| `src/core/csi.ts` | **Phase 1.** `parseCsi(text, fileName)` → CSI header info (challan count, TAN, name, download date, valid file name); `checkCsi(csi, lines, TARGET_FVU)` → findings `{level: 'error'│'warning'│'info', message}` |
+| `src/core/fvuResult.ts` | **Phase 1.** `readErrFile(text, lines)`, `readWarningFile(html, lines)` → issues tied to the challan / deductee / employee row with a plain-English `hint`; `readStatistics(html)`, `compareStatistics(stats, rv.totals)` |
 
 The core imports each other with `.ts` extensions (e.g. `from './protean.ts'`): enable `"allowImportingTsExtensions": true` and `"noEmit": true` in `tsconfig.json` (Vite handles this), or remove the extensions if your setup needs that — change nothing else. The JSON import uses `with { type: 'json' }`; if the toolchain objects, change it to a plain `import cols from './template_columns.json'`.
 
@@ -64,6 +66,17 @@ npm install https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
    4. Upload the `.fvu` on the e-filing portal (DSC/EVC) yourself.
    5. Form 138 Q4: dates of employment and challans cannot be in the future, so a Q4 return validates only after 31 March.
 
+## Phase 1 additions (CSI checks and FVU results)
+
+**A. CSI upload — add to step 2 (Upload).** Optional file input "CSI file from the e-filing portal (.csi)". Read it as text (`TextDecoder('latin1')`), `csi = parseCsi(text, file.name)` (show its error plainly if it is not a CSI). After the return is built, run `checkCsi(csi, lines, TARGET_FVU)` and show the findings on the Review → Summary tab: `error` in red (**disable the return-file download** while any CSI error exists), `warning` in amber, `info` in grey. Explain under the upload box: *"The CSI lists the challans the bank reported. Its challan lines are encoded, so only Protean's FVU can match each challan; this tool checks the TAN, the number of challans and whether the CSI is recent enough."* Add a button **"Download CSI with a valid name"** that saves the same bytes as `csi.validName` (the FVU rejects names with spaces or brackets, e.g. `ABCD12345E101026 (1).csi`).
+
+**B. New step 7 — "FVU results"** (after Download). Text: *"Ran Protean's FVU? Upload what it produced and we'll show which row to fix."* Three optional file inputs, any combination:
+- `.err` file (FVU found errors) → `readErrFile(text, lines)`
+- `…_Electronic_Statement_Warning_File.html` → `readWarningFile(html, lines)`
+- statistics report `<name>.html` → `readStatistics(html)` then `compareStatistics(stats, rv.totals)`
+
+Read all three with `TextDecoder('latin1')`. Show one table of issues: Errors first (red), then Warnings (amber); columns: Row (`where`), FVU code, FVU message, **What to do** (`hint`, or "See the FVU message" when empty). Group identical codes with a count ("T-FV-4015 × 79"). If the statistics agree with the return, show a green "FVU totals match the return"; otherwise list the differences. Keep the built `lines` in memory so this step works without rebuilding; if the page was reloaded, ask the user to rebuild first. Never offer to edit the `.txt` — fixes are made in the input workbook, then rebuild.
+
 ## Text to show on every page (footer)
 
 "Prepares draft return files only. It is not tax advice. A qualified person must review every return before it is filed. Built for Protean FVU version 1.2 (`TARGET_FVU` in the core); if Protean releases a newer FVU, check for an updated version of this tool."
@@ -81,6 +94,12 @@ Test files are in the repository at `web/test/fixtures/` (made-up data): `f140.x
 For each: upload, build, download the `.txt`, and compare with the expected file. They must be identical **except field 5 of line 1** (the creation date, today's date as DDMMYYYY). The review must show no problems. Also check: uploading a workbook with a blank section code lists it under "fill these in"; Form 138 Q4 with a new-regime employee whose HRA is filled is reported as a problem and the download is disabled.
 
 The core can also be checked from a terminal: `node web/test/parity.test.ts` (Node 22.6+; compares the TypeScript output with the Python tool's).
+
+### Phase 1 acceptance tests
+Files in `test/fixtures/` (made up): with `f143.xlsx` built for Q2 (RRR `770000000000001`):
+- Upload `ABCD12345E101026.csi` → no CSI errors; renamed to `ABCD12345E101026.csi` if uploaded as `ABCD12345E101026 (1).csi`.
+- FVU results: `sample.err` → 3 errors, the first tied to "Challan 1, row 1: E SCRAP TRADERS…" with the 4-decimal hint; `sample_Electronic_Statement_Warning_File.html` → 1 warning (challan not in CSI) with its hint; `sample_stats.html` → "FVU totals match the return".
+The same checks run from a terminal: `node test/phase1.test.ts`.
 
 ## Hosting on an existing site
 
@@ -891,4 +910,224 @@ export function reviewModel(lines: string[]): ReviewModel {
 
 ```json
 {"CHALLAN_COLS": ["Challan #", "BSR code", "Challan serial no.", "Date deposited", "Tax", "Interest", "Fee", "Others", "Minor head"], "DEDUCTEE_COLS": ["Challan #", "PAN", "Name", "Section code", "Date paid / credited", "Amount", "Rate %", "Tax", "Tax deposited (blank = Tax)", "Date deducted", "Reason code (lower/no deduction)", "Certificate no."], "TCS_COLS": ["Non-resident (Y/N)", "Opting out of tax regime (Y/N)", "Collectee code (01-10)", "Permanent establishment (Y/N, non-residents)"], "DEDUCTOR_FIELDS": [["TAN", "tan"], ["PAN", "pan"], ["Name", "name"], ["Address 1 (flat/plot)", "address1"], ["Address 2 (building)", "address2"], ["Address 3 (road)", "address3"], ["Address 4 (area)", "address4"], ["Town / city", "town"], ["State code (2 digits, e.g. 12 Haryana)", "state_code"], ["PIN", "pin"], ["Email", "email"], ["STD code", "std_code"], ["Phone", "phone"], ["Deductor type (F firm, K company, P individual ...)", "deductor_type"], ["Responsible person - name", "rp_name"], ["Responsible person - designation", "rp_designation"], ["Responsible person - PAN", "rp_pan"], ["RP address 1", "rp_address1"], ["RP address 2", "rp_address2"], ["RP address 3", "rp_address3"], ["RP address 4", "rp_address4"], ["RP town / city", "rp_town"], ["RP state code", "rp_state_code"], ["RP PIN", "rp_pin"], ["RP email", "rp_email"], ["RP STD code", "rp_std_code"], ["RP phone", "rp_phone"], ["GSTN (optional)", "gstn"]], "SALARY_COLS": [["PAN", "pan"], ["Name", "name"], ["Category (G/W/S/O)", "category"], ["Regime (Old/New)", "regime"], ["Employed from", "employed_from"], ["Employed to", "employed_to"], ["Salary 17(1)", "salary_17_1"], ["Perquisites 17(2)", "perquisites_17_2"], ["Profits in lieu 17(3)", "profits_17_3"], ["Previous employer salary", "previous_employer_salary"], ["Travel concession 10(5)", "travel_concession"], ["Gratuity 10(10)", "gratuity"], ["Commuted pension 10(10A)", "commuted_pension"], ["Leave encashment 10(10AA)", "leave_encashment"], ["HRA exemption 10(13A)", "hra_exemption"], ["Other s.10 exemption", "other_exemption"], ["Allowances 10(14)", "allowances_10_14"], ["Standard deduction 16(ia)", "standard_deduction"], ["Entertainment allowance 16(ii)", "entertainment_16ii"], ["Professional tax 16(iii)", "professional_tax_16iii"], ["House property income (+) / loss (-)", "house_property"], ["Other income offered", "other_income"], ["80C gross", "via:80C:gross"], ["80C deductible", "via:80C:deductible"], ["80CCC gross", "via:80CCC:gross"], ["80CCC deductible", "via:80CCC:deductible"], ["80CCD(1) gross", "via:80CCD(1):gross"], ["80CCD(1) deductible", "via:80CCD(1):deductible"], ["80CCD(1B) gross", "via:80CCD(1B):gross"], ["80CCD(1B) deductible", "via:80CCD(1B):deductible"], ["80CCD(2) gross", "via:80CCD(2):gross"], ["80CCD(2) deductible", "via:80CCD(2):deductible"], ["80D gross", "via:80D:gross"], ["80D deductible", "via:80D:deductible"], ["80E gross", "via:80E:gross"], ["80E deductible", "via:80E:deductible"], ["80G gross", "via:80G:gross"], ["80G qualifying", "via:80G:qualifying"], ["80G deductible", "via:80G:deductible"], ["80TTA gross", "via:80TTA:gross"], ["80TTA qualifying", "via:80TTA:qualifying"], ["80TTA deductible", "via:80TTA:deductible"], ["80CCH gross", "via:80CCH:gross"], ["80CCH deductible", "via:80CCH:deductible"], ["80CCH(1) gross", "via:80CCH(1):gross"], ["80CCH(1) deductible", "via:80CCH(1):deductible"], ["OTHERS gross", "via:OTHERS:gross"], ["OTHERS qualifying", "via:OTHERS:qualifying"], ["OTHERS deductible", "via:OTHERS:deductible"], ["Taxable income (blank = computed)", "taxable_income"], ["Tax on total income", "tax"], ["Rebate 87A", "rebate_87a"], ["Surcharge", "surcharge"], ["Health & education cess", "cess"], ["Relief 89", "relief_89"], ["TDS by this employer", "tds_current"], ["TDS by previous employer", "tds_previous"], ["TDS/TCS u/s 192(2B)", "tds_192_2b"], ["Higher rate for no PAN (Y/N)", "higher_rate"], ["Rent over 1 lakh (Y/N)", "rent_over_1lakh"], ["Landlord PANs (comma separated)", "landlord_pans"], ["Landlord names (comma separated)", "landlord_names"], ["Interest to lender (Y/N)", "interest_to_lender"], ["Lender PANs (comma separated)", "lender_pans"], ["Lender names (comma separated)", "lender_names"]], "SALARY_SHEET": "Salary (Q4)"}
+```
+
+## src/core/csi.ts
+
+```ts
+/**
+ * Phase 1 — checks on the CSI (Challan Status Inquiry) file before running Protean's FVU.
+ *
+ * A CSI file has one readable header line, e.g.
+ *   2^ABCD12345E^EXAMPLE TRADERS & CO^9.5^2.191^1.2^00000000000000000001
+ *   = challan count ^ TAN ^ name ^ FVU versions it supports ^ checksum
+ * followed by one ENCODED line per challan. The challan lines cannot be read: only Protean's FVU
+ * can match each challan against them. So this module checks what CAN be checked, and leaves the
+ * per-challan match to the FVU (whose result fvuResult.ts reads back).
+ *
+ * New module — does not change the frozen core.
+ */
+export interface CsiInfo {
+  challanCount: number;
+  tan: string;
+  name: string;
+  fvuVersions: string[];          // FVU versions the file was prepared for, e.g. ['9.5', '2.191', '1.2']
+  encodedLines: number;           // challan lines actually present
+  downloadedOn: string | null;    // 'YYYY-MM-DD' from the file name (TAN + ddmmyy), if it follows that pattern
+  originalName: string;
+  validName: string;              // name the FVU accepts: letters/digits only, at most 25 characters
+}
+
+export type Level = 'error' | 'warning' | 'info';
+export interface Finding { level: Level; message: string }
+
+const ymd = (y: number, m: number, d: number) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+
+export function parseCsi(text: string, fileName: string): CsiInfo {
+  const lines = text.split(/\r?\n/).filter(l => l.trim() !== '');
+  if (!lines.length) throw new Error('The CSI file is empty');
+  const h = lines[0].split('^');
+  if (h.length < 3 || !/^\d+$/.test(h[0]) || !/^[A-Z]{4}\d{5}[A-Z]$/.test(h[1].trim()))
+    throw new Error('This does not look like a CSI file (first line should start with the challan count and the TAN)');
+  const tan = h[1].trim();
+  const base = fileName.replace(/\.[^.]*$/, '');
+  const m = base.match(new RegExp(`^${tan}(\\d{2})(\\d{2})(\\d{2})`));
+  let downloadedOn: string | null = null;
+  if (m) {
+    const [d, mo, yy] = [Number(m[1]), Number(m[2]), 2000 + Number(m[3])];
+    const dt = new Date(Date.UTC(yy, mo - 1, d));
+    if (dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d) downloadedOn = ymd(yy, mo, d);
+  }
+  const clean = base.replace(/[^A-Za-z0-9]/g, '');
+  const stem = (m ? `${tan}${m[1]}${m[2]}${m[3]}` : clean).slice(0, 21);
+  return {
+    challanCount: Number(h[0]), tan, name: (h[2] ?? '').trim(), fvuVersions: h.slice(3, 6).map(s => s.trim()).filter(Boolean),
+    encodedLines: lines.length - 1, downloadedOn, originalName: fileName, validName: `${stem}.csi`,
+  };
+}
+
+/** Compare a CSI with the return lines (from the frozen core's buildStatement). */
+export function checkCsi(csi: CsiInfo, returnLines: string[], targetFvu: string): Finding[] {
+  const out: Finding[] = [];
+  const recs = returnLines.map(l => l.split('^'));
+  const bh = recs.find(f => f[1] === 'BH');
+  if (!bh) return [{ level: 'error', message: 'No return built yet' }];
+  const tan = bh[12], name = bh[18];
+  if (csi.tan !== tan) out.push({ level: 'error', message: `The CSI is for TAN ${csi.tan}, the return is for ${tan}. Download the CSI for ${tan}.` });
+  const norm = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (csi.tan === tan && norm(csi.name) !== norm(name))
+    out.push({ level: 'warning', message: `Name in the CSI ("${csi.name}") differs from the deductor name in the return ("${name}"). The FVU compares them; use the name as registered for the TAN.` });
+  if (csi.encodedLines !== csi.challanCount)
+    out.push({ level: 'warning', message: `The CSI says ${csi.challanCount} challans but contains ${csi.encodedLines} challan lines - the file may be damaged; download it again.` });
+
+  const cds = recs.filter(f => f[1] === 'CD' && f[5] === 'N');                  // challans that are not nil
+  const distinct = new Set(cds.map(f => `${f[14]}|${f[18]}|${f[16]}`)).size;   // BSR | date | serial
+  if (distinct > csi.challanCount)
+    out.push({ level: 'warning', message: `The return uses ${distinct} challans but the CSI lists only ${csi.challanCount}. Some challans are not in this CSI: download a CSI covering all challan dates, or check the challan details.` });
+  else out.push({ level: 'info', message: `The CSI lists ${csi.challanCount} challan(s); the return uses ${distinct}. (The CSI may also hold challans used in other forms - that is normal.)` });
+
+  if (csi.downloadedOn) {
+    const toIso = (d: string) => `${d.slice(4)}-${d.slice(2, 4)}-${d.slice(0, 2)}`;
+    const dates = cds.map(f => toIso(f[18])).sort();
+    const latest = dates[dates.length - 1];
+    if (latest) {
+      const days = (Date.parse(csi.downloadedOn) - Date.parse(latest)) / 86400000;
+      if (days < 0) out.push({ level: 'error', message: `The CSI was downloaded on ${csi.downloadedOn}, before the challan of ${latest} was paid. Download a fresh CSI.` });
+      else if (days < 7) out.push({ level: 'warning', message: `The CSI was downloaded ${days} day(s) after the latest challan (${latest}). Banks can take several days to report a challan, so it may be missing - if the FVU reports "challan not in CSI", download a fresh CSI.` });
+    }
+  } else {
+    out.push({ level: 'info', message: 'The CSI file name does not show its download date (normally TAN + ddmmyy), so its age cannot be checked.' });
+  }
+  if (!csi.fvuVersions.includes(targetFvu))
+    out.push({ level: 'info', message: `This CSI lists FVU versions ${csi.fvuVersions.join(', ')}; this tool targets FVU ${targetFvu}.` });
+  if (csi.validName !== csi.originalName)
+    out.push({ level: 'info', message: `Save the CSI as "${csi.validName}" - the FVU accepts only letters and digits, at most 25 characters.` });
+  return out;
+}
+```
+
+## src/core/fvuResult.ts
+
+```ts
+/**
+ * Phase 1 — read back what Protean's FVU reported, and point at the row to fix.
+ *
+ * Inputs (whichever the user uploads from the FVU output folder):
+ *   <name>.err                                   caret text, one line per error (file NOT valid)
+ *   <name>_Electronic_Statement_Warning_File.html warnings (file valid, but read them)
+ *   <name>.html                                   statistics report (file valid)
+ * plus the return lines, so each error/warning is tied to its challan / deductee / employee.
+ *
+ * New module — does not change the frozen core.
+ */
+export interface FvuIssue {
+  kind: 'error' | 'warning';
+  line: number;                    // line in the return file (0 = whole file)
+  record: string;                  // FH / BH / CD / DD / SD / S16 / C6A as found in our file
+  field: string;                   // FVU's field name or record label
+  code: string;                    // e.g. T-FV-4092
+  description: string;             // FVU's own text
+  where: string;                   // our plain description of the row
+  hint: string;                    // what usually fixes it ('' if unknown code)
+}
+
+/** Fixes learned from live FVU 1.2 runs (tds-agent Q2 / Q4 testing, Nov 2026). */
+export const KNOWN_FIXES: Record<string, string> = {
+  'T-FV-4092': 'Rate of deduction must have 4 decimal places. The tool writes this correctly - if you see it, the file was edited by hand.',
+  'T-FV-6417': 'Form 143: give a collectee code (01-10) on every row, for residents too.',
+  'T-FV-4319': 'No valid PAN: set "tax deducted at higher rate" to Y for this employee.',
+  'T-FV-4015': "Employment 'to' date: cannot be in the future and must fall in the financial year. Q4 returns validate only after 31 March.",
+  'T-FV-4014': "Employment 'from' date: cannot be in the future and must fall in the financial year.",
+  'T-FV-3040': 'Challan date cannot be in the future - check the date, or validate after it.',
+  'T-FV-3141': 'This challan is not in the CSI file. Download a fresh CSI (banks take days to report), then check the BSR code, date, serial number and amount against the challan counterfoil.',
+  'T-FV-4026': 'Income under salaries is wrong: standard deduction cannot exceed the salary; income cannot be negative.',
+  'T-FV-4028': 'Gross total income is wrong or negative - check salary, house property and other income.',
+  'T-FV-4031': 'Taxable income is wrong: Chapter VI-A deductions cannot exceed gross total income.',
+  'T-FV-4032': 'Income tax cannot be negative.',
+  'T-FV-6354': 'New regime: leave HRA exemption and travel concession blank.',
+  'T-FV-2092': 'Batch total of gross total income does not add up - usually caused by an invalid salary record; fix those first.',
+};
+const normCode = (c: string) => c.replace(/_/g, '-').toUpperCase();
+const hintFor = (code: string) => KNOWN_FIXES[normCode(code)] ?? '';
+
+function describe(lines: string[], lineNo: number): { record: string; where: string } {
+  const f = (lines[lineNo - 1] ?? '').split('^');
+  const rt = f[1] ?? '';
+  const dmy = (d: string) => (d && d.length === 8 ? `${d.slice(0, 2)}-${d.slice(2, 4)}-${d.slice(4)}` : d);
+  if (rt === 'CD') return { record: rt, where: `Challan ${f[3]} (BSR ${f[14]}, ${dmy(f[18])}, serial ${f[16]}, amount ${f[11]})` };
+  if (rt === 'DD') return { record: rt, where: `Challan ${f[4]}, row ${f[3]}: ${f[8]} (${f[7]}), section ${f[14]}, tax ${f[23]}` };
+  if (rt === 'SD') return { record: rt, where: `Employee ${f[3]}: ${f[8]} (${f[6]})` };
+  if (rt === 'S16' || rt === 'C6A') return { record: rt, where: `Employee ${f[3]}, ${rt === 'S16' ? 'section 16' : 'Chapter VI-A'} line ${f[4]} (${f[5]})` };
+  if (rt === 'BH') return { record: rt, where: 'Deductor / batch header' };
+  if (rt === 'FH') return { record: rt, where: 'File header' };
+  return { record: rt || '?', where: lineNo ? `Line ${lineNo}` : 'Whole file' };
+}
+
+/** <name>.err: "line^Regular^field^challan no^record no^code^description" per error. */
+export function readErrFile(text: string, returnLines: string[]): FvuIssue[] {
+  return text.split(/\r?\n/).filter(l => l.trim()).map(l => {
+    const p = l.split('^');
+    const codeIdx = p.findIndex(x => /^T[-_]FV[-_]\d+/i.test(x.trim()));
+    const line = Number(p[0]) || 0;
+    const code = codeIdx >= 0 ? p[codeIdx].trim() : '';
+    const d = describe(returnLines, line);
+    return { kind: 'error' as const, line, record: d.record, field: (p[2] ?? '').trim(), code,
+      description: codeIdx >= 0 ? p.slice(codeIdx + 1).join('^').trim() : l.trim(), where: d.where, hint: hintFor(code) };
+  });
+}
+
+const cellText = (h: string) => h.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&')
+  .replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n))).replace(/\s+/g, ' ').trim();
+function tableRows(html: string): string[][] {
+  return [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)].map(m => [...m[1].matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(c => cellText(c[1])));
+}
+
+/** <name>_Electronic_Statement_Warning_File.html: a table, one row per warning. */
+export function readWarningFile(html: string, returnLines: string[]): FvuIssue[] {
+  const rows = tableRows(html);
+  const hi = rows.findIndex(r => r.some(c => /^Line no/i.test(c)));
+  if (hi < 0) return [];
+  const hdr = rows[hi].map(c => c.toLowerCase());
+  const col = (re: RegExp) => hdr.findIndex(c => re.test(c));
+  const [cLine, cType, cCode, cDesc] = [col(/^line no/), col(/^record type/), col(/^error code/), col(/^error desc/)];
+  return rows.slice(hi + 1).filter(r => r.length >= hdr.length - 1 && r[cLine]).map(r => {
+    const line = Number(r[cLine]) || 0, code = r[cCode] ?? '';
+    const d = describe(returnLines, line);
+    return { kind: 'warning' as const, line, record: d.record, field: r[cType] ?? '', code, description: r[cDesc] ?? '',
+      where: d.where, hint: hintFor(code) };
+  });
+}
+
+export interface FvuStatistics { [label: string]: string }
+/** <name>.html statistics report: rows of labels, each followed by a row of values. */
+export function readStatistics(html: string): FvuStatistics {
+  const rows = tableRows(html).filter(r => r.some(c => c));
+  const out: FvuStatistics = {};
+  for (let i = 0; i + 1 < rows.length; i++) {
+    const labels = rows[i], values = rows[i + 1];
+    const looksLikeValues = values.every(v => /^[\d.,-]*$|^[A-Z0-9]{10}$|^(NA|Regular|Q\d|\d{4}-\d{2})$/.test(v) || v === '');
+    if (labels.length > 1 && labels.length === values.length && looksLikeValues) {
+      labels.forEach((l, k) => { out[l.replace(/\(\s*\)/g, '').replace(/\s+/g, ' ').trim()] = values[k]; });
+      i++;
+    }
+  }
+  return out;
+}
+
+/** Compare the FVU statistics with the return's own totals (from review.ts reviewModel totals). */
+export function compareStatistics(stats: FvuStatistics, totals: { challans: number; deducteeRows: number; taxDeducted: number; challanTotal: number }): string[] {
+  const out: string[] = [];
+  const num = (k: string) => (stats[k] !== undefined ? Number(stats[k].replace(/,/g, '')) : NaN);
+  const pairs: [string, number, string][] = [
+    ['No. of Challans', totals.challans, 'challans'],
+    ['Total Challan Amount', totals.challanTotal, 'total challan amount'],
+    ['No. of Deductee Records', totals.deducteeRows, 'deductee rows'],
+    ['No. of Party Records', totals.deducteeRows, 'collectee rows'],
+  ];
+  for (const [k, ours, label] of pairs) {
+    const v = num(k);
+    if (!Number.isNaN(v) && Math.abs(v - ours) > 0.005) out.push(`FVU shows ${label} ${v}, the return has ${ours}`);
+  }
+  return out;
+}
 ```
