@@ -20,6 +20,7 @@ Four files follow this brief. Put them in `src/core/` **exactly as given** and i
 | `src/core/template_columns.json` | column headings shared with the Python tool |
 | `src/core/csi.ts` | **Phase 1.** `parseCsi(text, fileName)` → CSI header info (challan count, TAN, name, download date, valid file name); `checkCsi(csi, lines, TARGET_FVU)` → findings `{level: 'error'│'warning'│'info', message}` |
 | `src/core/sectionCodes.ts` + `src/core/sectionMap.json` | **Phase 2.** `makeTemplateWithSection(form)` → blank workbook with a "Section (as in working)" column; `suggestSections(bytes, form, deductorType)` → one suggestion per Deductees row `{row, pan, name, text, rate, result: {status: 'given'│'auto'│'choose'│'error', code, reason, options, rateNote}}`; `applySections(bytes, [{row, code}])` → workbook bytes with codes filled in, for `readInputWorkbook`; `SECTION_MAP[code]` → description |
+| `src/core/challanMatch.ts` | **Phase 3.** `makeTemplateFull(form)` → blank workbook with the Phase 2 section column and two optional Challans columns (major head, section breakup); `readForMatching(bytes)` → `{challans, rows, problems}`; `matchChallans(challans, rows)` → `{rows: [{row, challanNo, status: 'given'│'matched'│'exception', reason}], challans: [{no, tax, usedHere, balance, interestPaid, interestDue, notes}], exceptions: [{kind, rows, challans, message}]}`; `applyChallanMatches(bytes, [{row, challanNo}])` → workbook bytes with "Challan #" filled |
 | `src/core/fvuResult.ts` | **Phase 1.** `readErrFile(text, lines)`, `readWarningFile(html, lines)` → issues tied to the challan / deductee / employee row with a plain-English `hint`; `readStatistics(html)`, `compareStatistics(stats, rv.totals)` |
 
 The core imports each other with `.ts` extensions (e.g. `from './protean.ts'`): enable `"allowImportingTsExtensions": true` and `"noEmit": true` in `tsconfig.json` (Vite handles this), or remove the extensions if your setup needs that — change nothing else. The JSON import uses `with { type: 'json' }`; if the toolchain objects, change it to a plain `import cols from './template_columns.json'`.
@@ -97,6 +98,24 @@ Read all three with `TextDecoder('latin1')`. Show one table of issues: Errors fi
 - Take `test/fixtures/f140.xlsx`, clear the 3 Section codes and type 194C / 194J(b) / PURCHASE GOODS 194 Q in "Section (as in working)": the step shows 1023 / 1027 / 1031 with reasons, and the built return equals `f140.txt` (apart from the date in line 1).
 - A row with "194J" and no rate shows a choice of 1026 / 1027 / 1028; a row with "194IA" in Form 140 shows an error (belongs in Form 141).
 - Terminal: `node test/phase2.test.ts`.
+
+## Phase 3 additions (challans matched by the tool)
+
+**A. Template.** "Download blank input workbook" now uses `makeTemplateFull(form)` (replaces `makeTemplateWithSection`). Help text: *"'Challan #' on each deductee row is now optional - leave it blank and the tool matches rows to challans. On the Challans sheet, give the FULL challan (even if part of it is for another form, e.g. TCS paid with TDS). Optional but recommended when one challan covers several sections or forms: 'Section breakup' from the challan counterfoil, e.g. 1023=5000; 1073=180000; and the 'Major head' (0020 company / 0021 non-company)."*
+
+**B. New step "Challan matching"** after "Section codes" (work on the bytes returned by `applySections`):
+1. `{challans, rows, problems} = readForMatching(bytes2)`; show `problems` first if any.
+2. `res = matchChallans(challans, rows)`. Show three panels:
+   - **Rows** table: Row, Name, PAN, Section, Date deducted, Tax, **Challan**, **Why** (`reason`). `given` / `matched` green; `exception` red with a drop-down to pick a challan (all challans, showing number, date, amount, balance) - the user's choice is applied as typed-in.
+   - **Challans** table from `res.challans`: Challan, Date, Tax, Used by this return, **Balance**, Interest paid, Interest due, Notes. Balance > 0: amber, note "part of this challan belongs to another form, or is excess - it must be used there". Interest due > paid: red.
+   - **Points needing a decision** from `res.exceptions` (one card each, `message`): duplicates, shortfalls, rows too large for any challan, challans dated before the deduction, interest short. These are NOT decided by the tool. (Phase 4 will add AI proposals here, applied only after approval.)
+3. Button **"Apply challan links"** - enabled only when every row has a challan (matched, given, or chosen by the user): `bytes3 = applyChallanMatches(bytes2, rows.map(r => ({row, challanNo})))`, then Build uses `readInputWorkbook(bytes3, form, quarter)` exactly as before. Offer **"Download workbook with challan links"**.
+4. If the user re-runs matching after editing the workbook, start again from step 1 - never keep stale links.
+
+### Phase 3 acceptance tests
+- `test/fixtures/f140.xlsx` with its 'Challan #' cells cleared: matching links rows 1,2 → challan 1 and row 3 → challan 2 (as originally), and the built return equals `f140.txt` apart from the date in line 1.
+- Two challans dated the same day that could each take a month's rows → the rows show as needing a decision (no guess) and a possible-duplicate card appears.
+- Terminal: `node test/phase3.test.ts`.
 
 ## Text to show on every page (footer)
 
@@ -2263,5 +2282,311 @@ export function applySections(data: ArrayBuffer | Uint8Array, choices: { row: nu
    "143"
   ]
  }
+}
+```
+
+## src/core/challanMatch.ts
+
+```ts
+/**
+ * Phase 3 — match deductee/collectee rows to challans by rules, and check the challans.
+ *
+ * Rules (no AI):
+ *  - A row deducted in month M is paid by a challan dated from the 1st of M; due by the 7th of M+1
+ *    (30 April for March). Later challans are allowed but late (interest is checked).
+ *  - Major head must fit the payee: company PAN (4th letter C) -> 0020, others -> 0021
+ *    (only when the challan's major head is given).
+ *  - With a section breakup on the challan (e.g. "1023=5000; 1073=180000"), only that section's
+ *    share is used; without one, the whole challan tax is available. What this form does not use
+ *    stays as balance for other forms (shared challans - e.g. TCS paid with TDS).
+ *  - Within Rs 1 counts as rounding.
+ * Never decided here (returned as exceptions for a person, or for the Phase 4 AI to propose):
+ *  rows larger than any challan, rows needing more than one challan, a challan dated before the
+ *  month of deduction, possible duplicate challans, a typed-in challan that does not fit.
+ *
+ * New module — does not change the frozen core.
+ */
+import * as XLSX from 'xlsx';
+import type { Form, Ymd } from './protean.ts';
+import { makeTemplateWithSection } from './sectionCodes.ts';
+
+export const MAJOR_HEAD_COLUMN = 'Major head (0020 company / 0021 non-company)';
+export const BREAKUP_COLUMN = 'Section breakup (code=amount; ...)';
+
+export interface ChallanIn {
+  no: number; bsr: string; serial: string; date: Ymd;
+  tax: number; interest: number; fee: number; others: number;
+  majorHead: string;                          // '0020' | '0021' | '' (not given)
+  breakup: Record<string, number> | null;     // section code -> tax, if given
+}
+export interface RowIn {
+  row: number; pan: string; name: string; code: string; dateDeducted: Ymd; tax: number;
+  challanNo: number | null;                   // typed in the workbook, if any
+}
+export interface RowMatch { row: number; challanNo: number | null; status: 'given' | 'matched' | 'exception'; reason: string }
+export interface ChallanUse {
+  no: number; tax: number; usedHere: number; balance: number;
+  interestPaid: number; interestDue: number; notes: string[];
+}
+export interface MatchException {
+  kind: 'too-large' | 'no-challan' | 'duplicate' | 'given-mismatch' | 'interest-short';
+  rows: number[]; challans: number[]; message: string;
+}
+export interface MatchResult { rows: RowMatch[]; challans: ChallanUse[]; exceptions: MatchException[] }
+
+// ---------------------------------------------------------------- dates and money
+const parts = (d: Ymd) => d.split('-').map(Number) as [number, number, number];
+const monthKey = (d: Ymd) => d.slice(0, 7);
+export function dueDate(deducted: Ymd): Ymd {
+  const [y, m] = parts(deducted);
+  if (m === 3) return `${y}-04-30`;
+  const ny = m === 12 ? y + 1 : y, nm = m === 12 ? 1 : m + 1;
+  return `${ny}-${String(nm).padStart(2, '0')}-07`;
+}
+/** Months for interest on late deposit: from the month of deduction to the month of payment, part months counting as whole. */
+export function lateMonths(deducted: Ymd, paid: Ymd): number {
+  if (paid <= dueDate(deducted)) return 0;
+  const [y1, m1] = parts(deducted), [y2, m2] = parts(paid);
+  return (y2 - y1) * 12 + (m2 - m1) + 1;
+}
+const majorHeadFor = (pan: string) => (/^[A-Z]{3}C[A-Z]\d{4}[A-Z]$/.test(pan) ? '0020' : /^[A-Z]{5}\d{4}[A-Z]$/.test(pan) ? '0021' : '');
+const r2 = (x: number) => Math.round(x * 100) / 100;
+const inr = (x: number) => x.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+
+export function parseBreakup(text: unknown): Record<string, number> | null {
+  const t = String(text ?? '').trim();
+  if (!t) return null;
+  const out: Record<string, number> = {};
+  for (const part of t.split(/[;,\n]+/)) {
+    const m = part.trim().match(/^(\d{4})\s*[=:]\s*([\d.]+)$/);
+    if (!m) throw new Error(`Section breakup "${part.trim()}" should look like 1023=5000`);
+    out[m[1]] = (out[m[1]] ?? 0) + Number(m[2]);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- matching
+export function matchChallans(challans: ChallanIn[], rows: RowIn[]): MatchResult {
+  const used = new Map<string, number>();                       // `${challan}|${code or *}` -> amount used
+  const capKey = (c: ChallanIn, code: string) => `${c.no}|${c.breakup ? code : '*'}`;
+  const capacity = (c: ChallanIn, code: string) =>
+    (c.breakup ? (c.breakup[code] ?? 0) : c.tax) - (used.get(capKey(c, code)) ?? 0);
+  const use = (c: ChallanIn, code: string, amt: number) => used.set(capKey(c, code), (used.get(capKey(c, code)) ?? 0) + amt);
+  const byNo = new Map(challans.map(c => [c.no, c]));
+  const out: RowMatch[] = [];
+  const exceptions: MatchException[] = [];
+
+  // possible duplicates: same date, same tax, same major head
+  const seen = new Map<string, number[]>();
+  for (const c of challans) {
+    const k = `${c.date}|${c.tax}|${c.majorHead}`;
+    seen.set(k, [...(seen.get(k) ?? []), c.no]);
+  }
+  for (const [k, nos] of seen) if (nos.length > 1)
+    exceptions.push({ kind: 'duplicate', rows: [], challans: nos, message: `Challans ${nos.join(' and ')} have the same date (${k.split('|')[0]}) and amount (Rs ${inr(Number(k.split('|')[1]))}) - possible duplicate payment. Decide which one this return uses; the other may be adjusted later (needs approval).` });
+
+  // 1. rows with a challan typed in: check, then reserve
+  for (const r of rows.filter(r => r.challanNo !== null)) {
+    const c = byNo.get(r.challanNo!);
+    const problems: string[] = [];
+    if (!c) problems.push(`challan #${r.challanNo} is not on the Challans sheet`);
+    else {
+      if (c.date < `${monthKey(r.dateDeducted)}-01`) problems.push(`challan dated ${c.date} is before the month of deduction (${r.dateDeducted})`);
+      const mh = majorHeadFor(r.pan);
+      if (c.majorHead && mh && c.majorHead !== mh) problems.push(`payee needs major head ${mh}, challan is ${c.majorHead}`);
+      if (c.breakup && !(r.code in c.breakup)) problems.push(`challan breakup has no section ${r.code}`);
+    }
+    if (problems.length) {
+      out.push({ row: r.row, challanNo: r.challanNo, status: 'exception', reason: problems.join('; ') });
+      exceptions.push({ kind: 'given-mismatch', rows: [r.row], challans: c ? [c.no] : [], message: `Row ${r.row} (${r.name}): ${problems.join('; ')}.` });
+    } else {
+      use(c!, r.code, r.tax);
+      out.push({ row: r.row, challanNo: c!.no, status: 'given', reason: `challan #${c!.no} as typed in the workbook` });
+    }
+  }
+
+  // 2. the rest. Passes, most certain first:
+  //    a. with a section breakup on the challans: by month + section, using that section's share
+  //    b. without: a challan whose amount EXACTLY equals a section's rows for the month
+  //    c. a challan whose amount exactly equals all of the month's rows (per major head)
+  //    d. only ONE challan can take the month's rows -> that one (balance noted)
+  //    otherwise: an exception (ambiguous / too large / no challan) - never a guess.
+  //    Major head: the payee's first; if no challan fits, the other one (SOP rule 11: tax deposited
+  //    under the other head is reported as deposited), with a note.
+  const anyBreakup = challans.some(c => c.breakup);
+  const pending = () => rows.filter(r => r.challanNo === null && !out.some(m => m.row === r.row));
+  const groupBy = (rs: RowIn[], withCode: boolean) => {
+    const g = new Map<string, RowIn[]>();
+    for (const r of rs) { const k = `${monthKey(r.dateDeducted)}|${majorHeadFor(r.pan)}|${withCode ? r.code : '*'}`; g.set(k, [...(g.get(k) ?? []), r]); }
+    return [...g.entries()].sort(([a], [b]) => a.localeCompare(b));
+  };
+  // A challan can only pay tax already deducted: its date must be on/after the LATEST deduction in the group.
+  let groupFrom = '';
+  const candidates = (month: string, code: string, mhWanted: string, otherHead: boolean) => {
+    const due = dueDate(`${month}-01`);
+    return challans.filter(c => c.date >= (groupFrom || `${month}-01`))
+      .filter(c => !c.majorHead || !mhWanted || (otherHead ? c.majorHead !== mhWanted : c.majorHead === mhWanted))
+      .filter(c => code === '*' || !c.breakup || (c.breakup[code] ?? 0) > 0)
+      .sort((a, b) => (a.date <= due) === (b.date <= due) ? a.date.localeCompare(b.date) : (a.date <= due ? -1 : 1));
+  };
+  const describe = (month: string, mh: string, code: string, grp: RowIn[], total: number) =>
+    `${grp.length} row(s) deducted in ${month}${mh ? `, payee major head ${mh}` : ''}${code !== '*' ? `, section ${code}` : ''} (Rs ${inr(total)})`;
+  const headNote = (c: ChallanIn, mh: string) => (c.majorHead && mh && c.majorHead !== mh
+    ? `; challan is major head ${c.majorHead} although the payee needs ${mh} - reported as deposited (SOP rule 11), check` : '');
+  const lateNote = (c: ChallanIn, month: string) => (c.date > dueDate(`${month}-01`) ? `; paid after the due date ${dueDate(`${month}-01`)}` : '');
+
+  // A pass groups the pending rows (by month, optionally section, optionally payee major head) and
+  // either looks for an EXACT amount (challan, or its section share) or the EARLIEST challan that
+  // can take the rows. Earliest = the first deposit after the deduction; a tie on that date is
+  // ambiguous and is never decided here.
+  const runPass = (withCode: boolean, withHead: boolean, mode: 'exact' | 'fit') => {
+    const g = new Map<string, RowIn[]>();
+    for (const r of pending()) {
+      const k = `${monthKey(r.dateDeducted)}|${withHead ? majorHeadFor(r.pan) : ''}|${withCode ? r.code : '*'}`;
+      g.set(k, [...(g.get(k) ?? []), r]);
+    }
+    for (const [k, grp] of [...g.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      const [month, mh, code] = k.split('|');
+      const total = r2(grp.reduce((a, r) => a + r.tax, 0));
+      groupFrom = grp.map(r => r.dateDeducted).sort().at(-1)!;
+      for (const other of withHead ? [false, true] : [false]) {
+        // a challan with a breakup can only serve a single-section group, from that section's share
+        const cands = candidates(month, code, mh, other).filter(c => code !== '*' || !c.breakup);
+        const cap = (c: ChallanIn) => capacity(c, c.breakup ? code : '*');
+        let pick: ChallanIn | undefined, how = '';
+        if (mode === 'exact') {
+          const exact = cands.filter(c => Math.abs(cap(c) - total) <= 1);
+          const first = exact.filter(c => c.date === exact[0]?.date);
+          if (first.length === 1) { pick = first[0]; how = pick.breakup ? `its section ${code} share equals these rows exactly` : 'challan amount equals these rows exactly'; }
+        } else {
+          const fits = cands.filter(c => cap(c) + 1 >= total).sort((a, b) => a.date.localeCompare(b.date));
+          const first = fits.filter(c => c.date === fits[0]?.date);
+          if (first.length === 1) { pick = first[0]; how = `first challan after the deduction that can take these rows; Rs ${inr(r2(cap(pick) - total))} left${pick.breakup ? ` in its section ${code} share` : ''} - balance for other forms or rows`; }
+          else if (first.length > 1) {
+            const msg = `${describe(month, mh, code, grp, total)}: challans ${first.map(c => '#' + c.no).join(', ')} (same date ${first[0].date}) could each take these rows. Add the section breakup / major head on the challans, or choose (needs a decision).`;
+            exceptions.push({ kind: 'too-large', rows: grp.map(r => r.row), challans: first.map(c => c.no), message: msg });
+            for (const r of grp) out.push({ row: r.row, challanNo: null, status: 'exception', reason: msg });
+            break;
+          }
+        }
+        if (pick) {
+          for (const r of grp) {
+            const rmh = majorHeadFor(r.pan);
+            use(pick, pick.breakup ? r.code : '*', r.tax);
+            out.push({ row: r.row, challanNo: pick.no, status: 'matched',
+              reason: `${describe(month, mh, code, grp, total)} -> challan #${pick.no} of ${pick.date}; ${how}${headNote(pick, rmh)}${lateNote(pick, month)}` });
+          }
+          break;
+        }
+      }
+    }
+  };
+  runPass(true, false, 'exact');      // a section's rows for the month = the challan (or its section share)
+  runPass(true, true, 'exact');       // ... per payee major head
+  runPass(false, false, 'exact');     // all the month's rows = the challan
+  runPass(false, true, 'exact');      // ... per payee major head
+  runPass(true, true, 'fit');         // earliest challan (section share) that can take a section's rows
+  runPass(false, true, 'fit');        // earliest challan that can take the month's rows
+
+  // whatever is left: no challan, or too large for any one challan
+  for (const [k, grp] of groupBy(pending(), anyBreakup)) {
+    const [month, mh, code] = k.split('|');
+    const total = r2(grp.reduce((a, r) => a + r.tax, 0));
+    groupFrom = grp.map(r => r.dateDeducted).sort().at(-1)!;
+    const cands = [...candidates(month, code, mh, false), ...candidates(month, code, mh, true)];
+    const msg = cands.length
+      ? `${describe(month, mh, code, grp, total)}: no single challan has enough left (most left: Rs ${inr(r2(Math.max(...cands.map(c => capacity(c, c.breakup ? code : '*')))))}). Split across challans, a short deposit, or a challan missing from the sheet - needs a decision.`
+      : `${describe(month, mh, code, grp, total)}: no challan dated on or after ${groupFrom}${code !== '*' ? ` covering section ${code}` : ''}.Add the challan, or decide how this is to be paid (needs a decision).`;
+    exceptions.push({ kind: cands.length ? 'too-large' : 'no-challan', rows: grp.map(r => r.row), challans: [...new Set(cands.map(c => c.no))], message: msg });
+    for (const r of grp) out.push({ row: r.row, challanNo: null, status: 'exception', reason: msg });
+  }
+
+  // 3. per-challan summary: use, balance, interest on late deposit
+  const rowByNo = new Map(rows.map(r => [r.row, r]));
+  const useSummary: ChallanUse[] = challans.map(c => {
+    const mine = out.filter(m => m.challanNo === c.no && m.status !== 'exception').map(m => rowByNo.get(m.row)!);
+    const usedHere = r2(mine.reduce((a, r) => a + r.tax, 0));
+    const interestDue = Math.round(mine.reduce((a, r) => a + r.tax * 0.015 * lateMonths(r.dateDeducted, c.date), 0));
+    const notes: string[] = [];
+    const balance = r2(c.tax - usedHere);
+    if (!mine.length) notes.push('not used by this return (may belong to another form or quarter)');
+    else if (balance > 1) notes.push(`Rs ${inr(balance)} not used by this return - must be used by another form, or is excess`);
+    if (c.breakup) {
+      const bsum = r2(Object.values(c.breakup).reduce((a, b) => a + b, 0));
+      if (Math.abs(bsum - c.tax) > 1) notes.push(`section breakup adds to Rs ${inr(bsum)}, challan tax is Rs ${inr(c.tax)}`);
+    }
+    if (interestDue > c.interest + 1) {
+      notes.push(`late deposit: interest due about Rs ${inr(interestDue)}, paid Rs ${inr(c.interest)}`);
+      exceptions.push({ kind: 'interest-short', rows: mine.map(r => r.row), challans: [c.no], message: `Challan #${c.no} of ${c.date}: interest on late deposit about Rs ${inr(interestDue)} (1.5% a month or part), challan shows Rs ${inr(c.interest)}. Pay the shortfall or check the dates.` });
+    }
+    return { no: c.no, tax: c.tax, usedHere, balance, interestPaid: c.interest, interestDue, notes };
+  });
+  out.sort((a, b) => a.row - b.row);
+  return { rows: out, challans: useSummary, exceptions };
+}
+
+// ---------------------------------------------------------------- workbook helpers
+/** Blank input workbook with the Phase 2 section column and the Phase 3 challan columns. */
+export function makeTemplateFull(form: Form): Uint8Array {
+  const wb = XLSX.read(makeTemplateWithSection(form), { type: 'array' });
+  const hdr = (XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets['Challans'], { header: 1 })[0] ?? []) as string[];
+  wb.Sheets['Challans'] = XLSX.utils.aoa_to_sheet([[...hdr, MAJOR_HEAD_COLUMN, BREAKUP_COLUMN]]);
+  return XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as Uint8Array;
+}
+
+const serialToYmd = (v: unknown): Ymd => {
+  if (typeof v === 'number') { const d = new Date(Math.floor(v) * 86400000 + Date.UTC(1899, 11, 30)); return d.toISOString().slice(0, 10); }
+  const s = String(v ?? '').trim(); const m = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/);
+  if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  throw new Error(`Cannot read date "${s}"`);
+};
+const num = (v: unknown) => (v === null || v === undefined || v === '' ? 0 : Number(String(v).replace(/,/g, '')));
+
+/** Read challans and rows for matching. Section codes must already be filled (Phase 2 applySections). */
+export function readForMatching(data: ArrayBuffer | Uint8Array): { challans: ChallanIn[]; rows: RowIn[]; problems: string[] } {
+  const wb = XLSX.read(data, { type: 'array' });
+  const grid = (sh: string) => XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[sh], { header: 1, raw: true, defval: null });
+  const problems: string[] = [];
+  const cg = grid('Challans'), ch = (cg[0] ?? []).map(v => String(v ?? '').trim());
+  const ci = (h: string) => ch.indexOf(h);
+  const challans: ChallanIn[] = [];
+  cg.slice(1).forEach((r, k) => {
+    if (!r.some(v => v !== null && v !== '')) return;
+    try {
+      challans.push({
+        no: Number(r[ci('Challan #')]), bsr: String(r[ci('BSR code')] ?? '').padStart(7, '0'),
+        serial: String(r[ci('Challan serial no.')] ?? '').padStart(5, '0'), date: serialToYmd(r[ci('Date deposited')]),
+        tax: num(r[ci('Tax')]), interest: num(r[ci('Interest')]), fee: num(r[ci('Fee')]), others: num(r[ci('Others')]),
+        majorHead: ci(MAJOR_HEAD_COLUMN) >= 0 ? String(r[ci(MAJOR_HEAD_COLUMN)] ?? '').trim().padStart(4, '0').replace(/^0000$/, '') : '',
+        breakup: ci(BREAKUP_COLUMN) >= 0 ? parseBreakup(r[ci(BREAKUP_COLUMN)]) : null,
+      });
+    } catch (e) { problems.push(`Challans row ${k + 2}: ${(e as Error).message}`); }
+  });
+  const dg = grid('Deductees'), dh = (dg[0] ?? []).map(v => String(v ?? '').trim());
+  const di = (h: string) => dh.indexOf(h);
+  const rows: RowIn[] = [];
+  dg.slice(1).forEach((r, k) => {
+    if (!r.some(v => v !== null && v !== '')) return;
+    const code = String(r[di('Section code')] ?? '').trim();
+    if (!/^\d{4}$/.test(code)) { problems.push(`Deductees row ${k + 2}: section code missing - work out section codes first`); return; }
+    try {
+      const cn = r[di('Challan #')];
+      rows.push({ row: k + 2, pan: String(r[di('PAN')] ?? '').trim().toUpperCase(), name: String(r[di('Name')] ?? '').trim(), code,
+        dateDeducted: serialToYmd(r[di('Date deducted')]), tax: num(r[di('Tax')]),
+        challanNo: cn === null || cn === '' ? null : Number(cn) });
+    } catch (e) { problems.push(`Deductees row ${k + 2}: ${(e as Error).message}`); }
+  });
+  return { challans, rows, problems };
+}
+
+/** Write the matched challan numbers into the Deductees "Challan #" column (approved rows only). */
+export function applyChallanMatches(data: ArrayBuffer | Uint8Array, matches: { row: number; challanNo: number }[]): Uint8Array {
+  const wb = XLSX.read(data, { type: 'array', cellDates: false });
+  const ws = wb.Sheets['Deductees'];
+  const hdr = (XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1 })[0] ?? []) as string[];
+  const c = hdr.indexOf('Challan #');
+  for (const { row, challanNo } of matches) ws[XLSX.utils.encode_cell({ r: row - 1, c })] = { t: 'n', v: challanNo };
+  return XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as Uint8Array;
 }
 ```

@@ -20,6 +20,7 @@ Four files follow this brief. Put them in `src/core/` **exactly as given** and i
 | `src/core/template_columns.json` | column headings shared with the Python tool |
 | `src/core/csi.ts` | **Phase 1.** `parseCsi(text, fileName)` → CSI header info (challan count, TAN, name, download date, valid file name); `checkCsi(csi, lines, TARGET_FVU)` → findings `{level: 'error'│'warning'│'info', message}` |
 | `src/core/sectionCodes.ts` + `src/core/sectionMap.json` | **Phase 2.** `makeTemplateWithSection(form)` → blank workbook with a "Section (as in working)" column; `suggestSections(bytes, form, deductorType)` → one suggestion per Deductees row `{row, pan, name, text, rate, result: {status: 'given'│'auto'│'choose'│'error', code, reason, options, rateNote}}`; `applySections(bytes, [{row, code}])` → workbook bytes with codes filled in, for `readInputWorkbook`; `SECTION_MAP[code]` → description |
+| `src/core/challanMatch.ts` | **Phase 3.** `makeTemplateFull(form)` → blank workbook with the Phase 2 section column and two optional Challans columns (major head, section breakup); `readForMatching(bytes)` → `{challans, rows, problems}`; `matchChallans(challans, rows)` → `{rows: [{row, challanNo, status: 'given'│'matched'│'exception', reason}], challans: [{no, tax, usedHere, balance, interestPaid, interestDue, notes}], exceptions: [{kind, rows, challans, message}]}`; `applyChallanMatches(bytes, [{row, challanNo}])` → workbook bytes with "Challan #" filled |
 | `src/core/fvuResult.ts` | **Phase 1.** `readErrFile(text, lines)`, `readWarningFile(html, lines)` → issues tied to the challan / deductee / employee row with a plain-English `hint`; `readStatistics(html)`, `compareStatistics(stats, rv.totals)` |
 
 The core imports each other with `.ts` extensions (e.g. `from './protean.ts'`): enable `"allowImportingTsExtensions": true` and `"noEmit": true` in `tsconfig.json` (Vite handles this), or remove the extensions if your setup needs that — change nothing else. The JSON import uses `with { type: 'json' }`; if the toolchain objects, change it to a plain `import cols from './template_columns.json'`.
@@ -97,6 +98,24 @@ Read all three with `TextDecoder('latin1')`. Show one table of issues: Errors fi
 - Take `test/fixtures/f140.xlsx`, clear the 3 Section codes and type 194C / 194J(b) / PURCHASE GOODS 194 Q in "Section (as in working)": the step shows 1023 / 1027 / 1031 with reasons, and the built return equals `f140.txt` (apart from the date in line 1).
 - A row with "194J" and no rate shows a choice of 1026 / 1027 / 1028; a row with "194IA" in Form 140 shows an error (belongs in Form 141).
 - Terminal: `node test/phase2.test.ts`.
+
+## Phase 3 additions (challans matched by the tool)
+
+**A. Template.** "Download blank input workbook" now uses `makeTemplateFull(form)` (replaces `makeTemplateWithSection`). Help text: *"'Challan #' on each deductee row is now optional - leave it blank and the tool matches rows to challans. On the Challans sheet, give the FULL challan (even if part of it is for another form, e.g. TCS paid with TDS). Optional but recommended when one challan covers several sections or forms: 'Section breakup' from the challan counterfoil, e.g. 1023=5000; 1073=180000; and the 'Major head' (0020 company / 0021 non-company)."*
+
+**B. New step "Challan matching"** after "Section codes" (work on the bytes returned by `applySections`):
+1. `{challans, rows, problems} = readForMatching(bytes2)`; show `problems` first if any.
+2. `res = matchChallans(challans, rows)`. Show three panels:
+   - **Rows** table: Row, Name, PAN, Section, Date deducted, Tax, **Challan**, **Why** (`reason`). `given` / `matched` green; `exception` red with a drop-down to pick a challan (all challans, showing number, date, amount, balance) - the user's choice is applied as typed-in.
+   - **Challans** table from `res.challans`: Challan, Date, Tax, Used by this return, **Balance**, Interest paid, Interest due, Notes. Balance > 0: amber, note "part of this challan belongs to another form, or is excess - it must be used there". Interest due > paid: red.
+   - **Points needing a decision** from `res.exceptions` (one card each, `message`): duplicates, shortfalls, rows too large for any challan, challans dated before the deduction, interest short. These are NOT decided by the tool. (Phase 4 will add AI proposals here, applied only after approval.)
+3. Button **"Apply challan links"** - enabled only when every row has a challan (matched, given, or chosen by the user): `bytes3 = applyChallanMatches(bytes2, rows.map(r => ({row, challanNo})))`, then Build uses `readInputWorkbook(bytes3, form, quarter)` exactly as before. Offer **"Download workbook with challan links"**.
+4. If the user re-runs matching after editing the workbook, start again from step 1 - never keep stale links.
+
+### Phase 3 acceptance tests
+- `test/fixtures/f140.xlsx` with its 'Challan #' cells cleared: matching links rows 1,2 → challan 1 and row 3 → challan 2 (as originally), and the built return equals `f140.txt` apart from the date in line 1.
+- Two challans dated the same day that could each take a month's rows → the rows show as needing a decision (no guess) and a possible-duplicate card appears.
+- Terminal: `node test/phase3.test.ts`.
 
 ## Text to show on every page (footer)
 
