@@ -19,6 +19,7 @@ Four files follow this brief. Put them in `src/core/` **exactly as given** and i
 | `src/core/review.ts` | `reviewModel(lines)` → totals, problems, points to review, deductor details, challan / deductee / salary tables |
 | `src/core/template_columns.json` | column headings shared with the Python tool |
 | `src/core/csi.ts` | **Phase 1.** `parseCsi(text, fileName)` → CSI header info (challan count, TAN, name, download date, valid file name); `checkCsi(csi, lines, TARGET_FVU)` → findings `{level: 'error'│'warning'│'info', message}` |
+| `src/core/sectionCodes.ts` + `src/core/sectionMap.json` | **Phase 2.** `makeTemplateWithSection(form)` → blank workbook with a "Section (as in working)" column; `suggestSections(bytes, form, deductorType)` → one suggestion per Deductees row `{row, pan, name, text, rate, result: {status: 'given'│'auto'│'choose'│'error', code, reason, options, rateNote}}`; `applySections(bytes, [{row, code}])` → workbook bytes with codes filled in, for `readInputWorkbook`; `SECTION_MAP[code]` → description |
 | `src/core/fvuResult.ts` | **Phase 1.** `readErrFile(text, lines)`, `readWarningFile(html, lines)` → issues tied to the challan / deductee / employee row with a plain-English `hint`; `readStatistics(html)`, `compareStatistics(stats, rv.totals)` |
 
 The core imports each other with `.ts` extensions (e.g. `from './protean.ts'`): enable `"allowImportingTsExtensions": true` and `"noEmit": true` in `tsconfig.json` (Vite handles this), or remove the extensions if your setup needs that — change nothing else. The JSON import uses `with { type: 'json' }`; if the toolchain objects, change it to a plain `import cols from './template_columns.json'`.
@@ -76,6 +77,26 @@ npm install https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
 - statistics report `<name>.html` → `readStatistics(html)` then `compareStatistics(stats, rv.totals)`
 
 Read all three with `TextDecoder('latin1')`. Show one table of issues: Errors first (red), then Warnings (amber); columns: Row (`where`), FVU code, FVU message, **What to do** (`hint`, or "See the FVU message" when empty). Group identical codes with a count ("T-FV-4015 × 79"). If the statistics agree with the return, show a green "FVU totals match the return"; otherwise list the differences. Keep the built `lines` in memory so this step works without rebuilding; if the page was reloaded, ask the user to rebuild first. Never offer to edit the `.txt` — fixes are made in the input workbook, then rebuild.
+
+## Phase 2 additions (section codes worked out by the tool)
+
+**A. Template.** The "Download blank input workbook" button now uses `makeTemplateWithSection(form)`. Help text: *"In Deductees, either type the 4-digit Section code, or leave it blank and copy the section as it appears in your working into 'Section (as in working)' - e.g. 194C, 94Q, CONTT. 194 C, Rent building, 393(1)-6(i).D(a), Salary. The tool works out the code and shows you why."*
+
+**B. New step "Section codes"** between Upload and Build (always shown, even if every row has a code):
+1. Get the deductor type: from the Deductor sheet (`readInputWorkbook(...).deductor?.deductor_type`) or from the uploaded .fvu (`deductorFromFvu(text).deductor.deductor_type`).
+2. `rows = suggestSections(bytes, form, deductorType)`. Show a table: Row, Name, PAN, Rate %, Section as written, **Code**, **Why** (`result.reason`), Note (`result.rateNote`, amber).
+   - `given` / `auto`: show the code (green); the user may override it with a drop-down of all codes for this form (`Object.entries(SECTION_MAP).filter(([,v]) => v.forms.includes(form))`).
+   - `choose`: amber row; a required drop-down of `result.options` (show `label`); no default.
+   - `error`: red row with `result.reason`; the user must fix the workbook (wrong form, unsupported section) or pick a code from the full list.
+   - Summary line: "N worked out, N need your choice, N problems". Filter buttons for each status.
+3. Button **"Apply codes"** (enabled only when every row has a code): `bytes2 = applySections(bytes, rows.map(r => ({row: r.row, code: chosen code})))`, then continue to Build with `readInputWorkbook(bytes2, form, quarter)` exactly as before. Also offer **"Download workbook with codes"** (`bytes2` as .xlsx) so the user can keep it.
+4. Never change a code silently; never choose for a `choose` row. Rate notes are information only (the code stays as the working shows - SOP rule 11).
+
+### Phase 2 acceptance tests
+- Template from `makeTemplateWithSection('140')` has "Section (as in working)" right after "Section code".
+- Take `test/fixtures/f140.xlsx`, clear the 3 Section codes and type 194C / 194J(b) / PURCHASE GOODS 194 Q in "Section (as in working)": the step shows 1023 / 1027 / 1031 with reasons, and the built return equals `f140.txt` (apart from the date in line 1).
+- A row with "194J" and no rate shows a choice of 1026 / 1027 / 1028; a row with "194IA" in Form 140 shows an error (belongs in Form 141).
+- Terminal: `node test/phase2.test.ts`.
 
 ## Text to show on every page (footer)
 
@@ -1129,5 +1150,1118 @@ export function compareStatistics(stats: FvuStatistics, totals: { challans: numb
     if (!Number.isNaN(v) && Math.abs(v - ours) > 0.005) out.push(`FVU shows ${label} ${v}, the return has ${ours}`);
   }
   return out;
+}
+```
+
+## src/core/sectionCodes.ts
+
+```ts
+/**
+ * Phase 2 — work out the 4-digit section code from the section as written in the working
+ * ("194C", "94C", "Contract", "393(1)-6(i).D(a)", "194J(b)", "Salary 92B", "Scrap" ...).
+ *
+ * Rules only, no AI. Every result carries the reason. When the rules cannot decide (or the
+ * section belongs in another form) the row is NOT guessed: it is returned as 'choose' with the
+ * possible codes, or 'error'. A rate that does not fit the code is reported, never changed
+ * (SOP rule 11: report under the section the tax was deposited in).
+ *
+ * The section map (sectionMap.json) gives code descriptions, rates and forms. Its "old section"
+ * labels have errors, so the old-section rules below are written out here instead.
+ * New module — does not change the frozen core.
+ */
+import * as XLSX from 'xlsx';
+import MAP from './sectionMap.json' with { type: 'json' };
+import { makeTemplate } from './inputWorkbook.ts';
+import type { Form } from './protean.ts';
+
+export interface CodeInfo { ref: string; category: string; nature: string; rate: string; forms: string[] }
+export const SECTION_MAP = MAP as Record<string, CodeInfo>;
+export const SECTION_TEXT_COLUMN = 'Section (as in working)';
+
+export interface SectionInput {
+  text: string;                 // section as written in the working
+  pan?: string;                 // payee PAN (company / non-company decides some codes)
+  rate?: number | null;         // rate % from the working, if any
+  form: Form;
+  deductorType?: string;        // BH 32: A central govt, S state govt ... (salary codes)
+}
+export interface SectionResult {
+  status: 'given' | 'auto' | 'choose' | 'error';
+  code: string;                 // '' unless given/auto
+  reason: string;
+  options: { code: string; label: string }[];   // for 'choose'
+  rateNote: string;             // '' or a note that the rate does not fit the code
+}
+
+const label = (c: string) => `${c} - ${SECTION_MAP[c]?.ref ?? ''} ${SECTION_MAP[c]?.nature ?? ''}`.trim();
+const inForm = (c: string, form: Form) => (SECTION_MAP[c]?.forms ?? []).includes(form);
+const pan4 = (pan?: string) => (pan && /^[A-Z]{5}\d{4}[A-Z]$/.test(pan.toUpperCase()) ? pan.toUpperCase()[3] : '');
+
+function rateNote(code: string, rate?: number | null): string {
+  const m = SECTION_MAP[code]?.rate.match(/^([\d.]+)%$/);
+  if (!m || rate === null || rate === undefined || Number.isNaN(rate) || rate === 0) return '';
+  return Math.abs(Number(m[1]) - rate) > 0.001
+    ? `Rate ${rate}% in the working; the usual rate for ${code} is ${m[0]}. Check - if tax was deposited under ${code}, keep ${code} (SOP rule 11) and note the difference.`
+    : '';
+}
+
+function finish(code: string, reason: string, i: SectionInput, status: 'given' | 'auto' = 'auto'): SectionResult {
+  if (!SECTION_MAP[code]) return { status: 'error', code: '', reason: `Code ${code} is not in the section map`, options: [], rateNote: '' };
+  if (!inForm(code, i.form)) {
+    const forms = SECTION_MAP[code].forms.map(f => `Form ${f}`).join(' / ');
+    return { status: 'error', code: '', options: [], rateNote: '',
+      reason: `${label(code)} is reported in ${forms}, not Form ${i.form}${['141', '144'].some(f => SECTION_MAP[code].forms.includes(f)) && !SECTION_MAP[code].forms.some(f => ['138', '140', '143'].includes(f)) ? ' (that form is not supported by this tool)' : ''}.` };
+  }
+  return { status, code, reason, options: [], rateNote: rateNote(code, i.rate) };
+}
+function choose(codes: string[], reason: string, i: SectionInput): SectionResult {
+  const ok = codes.filter(c => inForm(c, i.form));
+  if (ok.length === 1) return finish(ok[0], `${reason} - only ${ok[0]} applies in Form ${i.form}`, i);
+  if (!ok.length) return { status: 'error', code: '', reason: `${reason} - none of ${codes.join(', ')} belongs in Form ${i.form}`, options: [], rateNote: '' };
+  return { status: 'choose', code: '', reason, options: ok.map(c => ({ code: c, label: label(c) })), rateNote: '' };
+}
+const err = (reason: string): SectionResult => ({ status: 'error', code: '', reason, options: [], rateNote: '' });
+
+// ---------------------------------------------------------------- the rules
+function contract(i: SectionInput, why: string): SectionResult {
+  const p = pan4(i.pan);
+  // The working's own label says which 194C section the tax went under (SOP rule 11): it decides,
+  // and a PAN that says otherwise is noted, not "corrected".
+  const t = (i.text ?? '').toUpperCase();
+  const saysInd = /IND(IVIDUAL|IVIUAL|\.)?\s*(\/|OR|&)\s*HUF|IND\/HUF/.test(t) && !/OTHER THAN/.test(t);
+  const saysOther = /OTHER(S)?\s+THAN\s+IND|CONTRACT\s+OTHERS?\b/.test(t);
+  if (saysInd || saysOther) {
+    const code = saysInd ? '1023' : '1024';
+    const r = finish(code, `${why}; the working says ${saysInd ? 'individual/HUF' : 'other than individual/HUF'}`, i);
+    const panInd = p === 'P' || p === 'H';
+    if (p && panInd !== saysInd) r.rateNote = [r.rateNote, `Payee PAN 4th letter ${p} suggests ${panInd ? '1023' : '1024'}; kept ${code} as in the working (SOP rule 11) - check.`].filter(Boolean).join(' ');
+    return r;
+  }
+  if (p === 'P' || p === 'H') return finish('1023', `${why}; payee PAN is an individual/HUF (4th letter ${p})`, i);
+  if (p) return finish('1024', `${why}; payee PAN is not an individual/HUF (4th letter ${p})`, i);
+  return choose(['1023', '1024'], `${why}; no valid PAN, so individual/HUF or not cannot be told`, i);
+}
+function salary(i: SectionInput, why: string): SectionResult {
+  if (i.deductorType === 'A') return finish('1003', `${why}; deductor is the Central Government`, i);
+  if (i.deductorType === 'S') return finish('1001', `${why}; deductor is a State Government`, i);
+  if (i.deductorType) return finish('1002', `${why}; deductor type ${i.deductorType} (not government) - private employee`, i);
+  return choose(['1001', '1002', '1003'], `${why}; deductor type not known`, i);
+}
+function fees(i: SectionInput, t: string, why: string): SectionResult {
+  if (/DIRECTOR/.test(t)) return finish('1028', `${why}; director remuneration`, i);
+  if (/TECHNICAL|ROYALTY|CALL CENT|FILM/.test(t)) return finish('1026', `${why}; technical services / royalty`, i);
+  if (/\bPROF(ESSION|F\b|\.|\b)|LEGAL|AUDIT|ADVOCATE|DOCTOR|ARCHITECT/.test(t)) return finish('1027', `${why}; professional services`, i);
+  if (i.rate === 2) return finish('1026', `${why}; rate 2% = technical services`, i);
+  if (i.rate === 10) return finish('1027', `${why}; rate 10% = professional services (not director)`, i);
+  return choose(['1026', '1027', '1028'], `${why}; technical / professional / director cannot be told from the working`, i);
+}
+function rent(i: SectionInput, t: string, why: string): SectionResult {
+  if (/OTHER THAN (PLANT|MACHIN)/.test(t)) return finish('1009', `${why}; other than plant & machinery`, i);
+  if (/PLANT|MACHIN|EQUIPMENT|VEHICLE|P\s*&\s*M\b/.test(t)) return finish('1008', `${why}; plant / machinery / equipment`, i);
+  if (/BUILDING|BLDG|LAND|FURNITURE|OFFICE|PREMISES|GODOWN|WAREHOUSE|FLAT|SHOP/.test(t)) return finish('1009', `${why}; land / building / furniture`, i);
+  if (i.rate === 2) return finish('1008', `${why}; rate 2% = plant & machinery`, i);
+  if (i.rate === 10) return finish('1009', `${why}; rate 10% = land / building / furniture`, i);
+  return choose(['1008', '1009'], `${why}; plant & machinery or building cannot be told`, i);
+}
+function cashKind(i: SectionInput, t: string, cash: string, kind: string, why: string): SectionResult {
+  if (/KIND/.test(t)) return finish(kind, `${why}; in kind`, i);
+  if (/CASH/.test(t)) return finish(cash, `${why}; in cash`, i);
+  return choose([cash, kind], `${why}; cash or kind not stated`, i);
+}
+function tcs(i: SectionInput, t: string, why: string): SectionResult | null {
+  const kw: [RegExp, string, string][] = [
+    [/SCRAP/, '1073', 'sale of scrap'], [/LIQUOR|ALCOHOL/, '1068', 'alcoholic liquor'], [/TENDU/, '1069', 'tendu leaves'],
+    [/TIMBER.*OTHER|OTHER.*TIMBER/, '1071', 'timber (other than forest lease)'], [/TIMBER/, '1070', 'timber under forest lease'],
+    [/FOREST/, '1072', 'other forest produce'], [/MINERAL|COAL|LIGNITE|IRON ORE/, '1074', 'minerals'],
+    [/MOTOR|VEHICLE|CAR\b/, '1075', 'motor vehicle'], [/WRIST|WATCH/, '1076', 'wristwatch'], [/ART/, '1077', 'art piece'],
+    [/COIN|STAMP/, '1078', 'coin / stamp'], [/YACHT|BOAT|HELICOPTER/, '1079', 'yacht / boat / helicopter'],
+    [/SUNGLASS/, '1080', 'sunglasses'], [/HANDBAG|PURSE/, '1081', 'handbag / purse'], [/SHOE/, '1082', 'shoes'],
+    [/SPORT/, '1083', 'sportswear / equipment'], [/THEATRE|THEATER/, '1084', 'home theatre'], [/HORSE/, '1085', 'horse'],
+    [/EDUCATION|MEDICAL/, '1086', 'LRS education / medical'], [/LRS|REMITTANCE/, '1087', 'LRS other purposes'],
+    [/PARKING/, '1090', 'parking lot'], [/TOLL/, '1091', 'toll plaza'], [/MINE|QUARRY/, '1092', 'mine / quarry'],
+  ];
+  for (const [re, code, what] of kw) if (re.test(t)) return finish(code, `${why}; ${what}`, i);
+  if (/TOUR/.test(t)) return choose(['1088', '1089'], `${why}; overseas tour package - up to or above the threshold?`, i);
+  return null;
+}
+
+export function resolveSection(i: SectionInput): SectionResult {
+  const raw = (i.text ?? '').toString();
+  const t = raw.toUpperCase().replace(/\s+/g, ' ').trim();
+  if (!t) return err('No section given in the working');
+
+  // 1. a 4-digit code already
+  const four = t.match(/(?:^|[^\d])(1\d{3})(?:[^\d]|$)/);
+  if (four && SECTION_MAP[four[1]]) return finish(four[1], `code ${four[1]} given in the working`, i, 'given');
+
+  // 2. ITA 2025 reference, e.g. 393(1)-6(i).D(a), 394(1)-4, 392 - alone, or inside a label
+  //    such as "Rent Bldg 393(1)-2(ii).D(b)" or "Contract Ind/HUF 393(1)-6(i).D(a)"
+  const embedded = t.match(/39[234]\s*\(\s*\d\s*\)\s*-\s*\d+(\s*\(\s*[IVX]+\s*\))?(\s*\.\s*D\s*\(\s*[AB]\s*\))?/);
+  const ref = (embedded && embedded[0] !== t ? embedded[0] : t).replace(/\s+/g, '').replace(/^(\d{3})\(1\)-(\d+)$/, '$1-$2');
+  const exact = Object.entries(SECTION_MAP).filter(([, v]) => v.ref.toUpperCase() === ref).map(([c]) => c);
+  const altRef = ref.replace(/^394\(1\)-/, '394-');
+  const exact2 = exact.length ? exact : Object.entries(SECTION_MAP).filter(([, v]) => v.ref.toUpperCase() === altRef).map(([c]) => c);
+  if (/^39[234]/.test(ref)) {
+    const pref = Object.entries(SECTION_MAP).filter(([, v]) => v.ref.toUpperCase().startsWith(ref)).map(([c]) => c);
+    const cands = exact2.length ? exact2 : pref;
+    const inF = cands.filter(c => inForm(c, i.form));
+    if (inF.length === 1) return finish(inF[0], `ITA 2025 reference ${raw.trim()}`, i);
+    if (inF.every(c => ['1023', '1024'].includes(c)) && inF.length) return contract(i, `ITA 2025 reference ${raw.trim()} (contract)`);
+    if (inF.every(c => ['1026', '1027', '1028'].includes(c)) && inF.length) return fees(i, t, `ITA 2025 reference ${raw.trim()} (fees)`);
+    if (inF.every(c => ['1001', '1002', '1003'].includes(c)) && inF.length) return salary(i, `ITA 2025 reference ${raw.trim()} (salary)`);
+    if (inF.every(c => ['1008', '1009'].includes(c)) && inF.length) return rent(i, t, `ITA 2025 reference ${raw.trim()} (rent)`);
+    if (inF.length > 1) return choose(inF, `ITA 2025 reference ${raw.trim()} covers several codes`, i);
+    if (cands.length) return choose(cands, `ITA 2025 reference ${raw.trim()}`, i);
+  }
+
+  // 3. old (ITA 1961) section, written loosely and anywhere in the text: "194 C", "94C", "194-J(b)",
+  //    "Sec. 194Q", "CONTT. 194 C", "PROFF. 194 J", "SALARY 92B", "206C(1) scrap"
+  let s = '';
+  const tt = t.replace(/\b(SECTION|SEC|US|U\/S)(?=\d)/g, '$1 ');            // "Section194P" -> "Section 194P"
+  const tcsHit = tt.match(/(?:^|[^0-9])206\s*-?\s*C\s*(\(\s*[0-9A-Z]{1,3}\s*\))?/);
+  const secHit = tt.match(/(?:^|[^0-9A-Z])(1?9[2-6])(?![0-9])\s*-?\s*([A-Z]{1,3})?\s*(\(\s*[A-Z0-9]{1,3}\s*\))?/);
+  if (tcsHit) s = `206C${(tcsHit[1] ?? '').replace(/\s+/g, '')}`;
+  else if (secHit) s = `${secHit[1].length === 2 ? '1' + secHit[1] : secHit[1]}${secHit[2] ?? ''}${(secHit[3] ?? '').replace(/\s+/g, '')}`;
+  const why = `section ${raw.trim()}`;
+  if (/^192A/.test(s)) return finish('1004', `${why}: PF withdrawal`, i);
+  if (/^192/.test(s)) return salary(i, `${why}: salary`);
+  if (/^193/.test(s)) return finish('1019', `${why}: interest on securities`, i);
+  if (/^194A/.test(s)) return /BANK|POST|CO-?OP/.test(t) ? choose(['1020', '1021'], `${why}: interest by a bank / post office / co-op - senior citizen or not?`, i)
+    : finish('1022', `${why}: interest other than by banks`, i);
+  if (/^194BB/.test(s)) return finish('1062', `${why}: horse race winnings`, i);
+  if (/^194BA/.test(s)) return cashKind(i, t, '1060', '1061', `${why}: online gaming`);
+  if (/^194B/.test(s)) return cashKind(i, t, '1058', '1059', `${why}: lottery / puzzle / game`);
+  if (/^194C/.test(s)) return contract(i, `${why}: contract`);
+  if (/^194DA/.test(s)) return finish('1030', `${why}: life insurance payout`, i);
+  if (/^194D/.test(s)) return finish('1005', `${why}: insurance commission`, i);
+  if (/^194EE/.test(s)) return finish('1066', `${why}: NSS withdrawal`, i);
+  if (/^194E/.test(s)) return finish('1039', `${why}: non-resident sportsperson`, i);
+  if (/^194G/.test(s)) return finish('1063', `${why}: commission on lottery tickets`, i);
+  if (/^194H/.test(s)) return finish('1006', `${why}: commission / brokerage`, i);
+  if (/^194IA/.test(s)) return finish('1010', `${why}: transfer of immovable property`, i);
+  if (/^194IB/.test(s)) return finish('1007', `${why}: rent by individual / HUF`, i);
+  if (/^194IC/.test(s)) return finish('1012', `${why}: compensation (joint development)`, i);
+  if (/^194I\(A\)/.test(s)) return finish('1008', `${why}: rent of plant & machinery`, i);
+  if (/^194I\(B\)/.test(s)) return finish('1009', `${why}: rent of land / building / furniture`, i);
+  if (/^194I/.test(s)) return rent(i, t, `${why}: rent`);
+  if (/^194J(A|\(A\))/.test(s)) return finish('1026', `${why}: technical services / royalty`, i);
+  if (/^194J(B|\(B\))/.test(s)) return /DIRECTOR/.test(t) ? finish('1028', `${why}: director remuneration`, i) : finish('1027', `${why}: professional services`, i);
+  if (/^194J/.test(s)) return fees(i, t, `${why}: fees`);
+  if (/^194K/.test(s)) return finish('1013', `${why}: mutual fund units`, i);
+  if (/^194LBC/.test(s)) return finish('1018', `${why}: securitisation trust`, i);
+  if (/^194LBA/.test(s)) return choose(['1014', '1015', '1016', '1017'], `${why}: business trust - interest / dividend / rent / REIT?`, i);
+  if (/^194M/.test(s)) return finish('1025', `${why}: payments by individuals / HUF`, i);
+  if (/^194N/.test(s)) return /CO-?OP/.test(t) ? finish('1064', `${why}: cash withdrawal (co-operative society)`, i) : choose(['1064', '1065'], `${why}: cash withdrawal - co-operative society or not?`, i);
+  if (/^194O/.test(s)) return finish('1035', `${why}: e-commerce operator`, i);
+  if (/^194P/.test(s)) return err(`${why}: specified senior citizen (Annexure III of Form 138) is not supported by this tool`);
+  if (/^194Q/.test(s)) return finish('1031', `${why}: purchase of goods`, i);
+  if (/^194R/.test(s)) return cashKind(i, t, '1033', '1034', `${why}: business perquisite`);
+  if (/^194S/.test(s)) return /KIND/.test(t) ? finish('1038', `${why}: virtual digital asset (kind)`, i) : finish('1037', `${why}: virtual digital asset`, i);
+  if (/^194T/.test(s)) return finish('1067', `${why}: payment to partner`, i);
+  if (/^194($|[^0-9A-Z])/.test(s) || /^194DIV/.test(s)) return finish('1029', `${why}: dividend`, i);
+  if (/^195|^196/.test(s)) return err(`${why}: non-resident payments go in Form 144, which this tool does not support`);
+  if (/^206C\(?1H/.test(s)) return err(`${why}: TCS on sale of goods (206C(1H)) no longer applies from 1 April 2025 - check the working`);
+  if (/^206C/.test(s)) return tcs(i, t, `${why}: TCS`) ?? choose(Object.keys(SECTION_MAP).filter(c => inForm(c, '143')), `${why}: TCS - nature of the goods / receipt not stated`, i);
+
+  // 4. words only (partner first: "Partner salary" is 194T, not salary)
+  if (/PARTNER/.test(t)) return finish('1067', `"${raw.trim()}": payment to partner`, i);
+  if (/SALAR/.test(t)) return salary(i, `"${raw.trim()}": salary`);
+  if (/CONTRACT|\bCONTT\b|JOB ?WORK|TRANSPORT|LABOU?R|CARRIAGE|FREIGHT/.test(t)) return contract(i, `"${raw.trim()}": contract`);
+  if (/DIRECTOR|\bPROF(ESSION|F\b|\.|\b)|TECHNICAL|ROYALTY|LEGAL|AUDIT|CONSULT/.test(t)) return fees(i, t, `"${raw.trim()}": fees`);
+  if (/COMMISSION|BROKERAGE/.test(t)) return finish('1006', `"${raw.trim()}": commission / brokerage`, i);
+  if (/RENT|HIRE|LEASE/.test(t)) return rent(i, t, `"${raw.trim()}": rent`);
+  if (/PURCHASE|GOODS/.test(t)) return finish('1031', `"${raw.trim()}": purchase of goods`, i);
+  if (/PARTNER/.test(t)) return finish('1067', `"${raw.trim()}": payment to partner`, i);
+  if (/INTEREST/.test(t)) return finish('1022', `"${raw.trim()}": interest (not by a bank)`, i);
+  if (i.form === '143') { const r = tcs(i, t, `"${raw.trim()}"`); if (r) return r; }
+  return err(`"${raw.trim()}" not recognised - choose the code from the section map`);
+}
+
+// ---------------------------------------------------------------- workbook helpers
+/** Blank input workbook with an extra "Section (as in working)" column on Deductees. */
+export function makeTemplateWithSection(form: Form): Uint8Array {
+  const wb = XLSX.read(makeTemplate(form), { type: 'array' });
+  const ws = wb.Sheets['Deductees'];
+  const hdr = (XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1 })[0] ?? []) as string[];
+  const at = hdr.indexOf('Section code');
+  hdr.splice(at + 1, 0, SECTION_TEXT_COLUMN);
+  wb.Sheets['Deductees'] = XLSX.utils.aoa_to_sheet([hdr]);
+  return XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as Uint8Array;
+}
+
+export interface RowSuggestion { row: number; pan: string; name: string; text: string; rate: number | null; result: SectionResult }
+
+/** One suggestion per Deductees row: rows that already have a 4-digit code are checked against the form. */
+export function suggestSections(data: ArrayBuffer | Uint8Array, form: Form, deductorType?: string): RowSuggestion[] {
+  const wb = XLSX.read(data, { type: 'array' });
+  const ws = wb.Sheets['Deductees'];
+  if (!ws) return [];
+  const grid = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, raw: true, defval: null, blankrows: true });
+  const hdr = ((grid[0] ?? []) as unknown[]).map(v => String(v ?? '').trim());
+  const col = (h: string) => hdr.indexOf(h);
+  const [cCode, cText, cPan, cName, cRate] = [col('Section code'), col(SECTION_TEXT_COLUMN), col('PAN'), col('Name'), col('Rate %')];
+  const out: RowSuggestion[] = [];
+  grid.slice(1).forEach((r, k) => {
+    if (!r.some(v => v !== null && v !== '')) return;
+    const code = String(r[cCode] ?? '').trim(), text = cText >= 0 ? String(r[cText] ?? '').trim() : '';
+    const rateRaw = cRate >= 0 ? r[cRate] : null;
+    const rate = rateRaw === null || rateRaw === '' ? null : Number(rateRaw);
+    const pan = String(r[cPan] ?? '').trim().toUpperCase();
+    out.push({ row: k + 2, pan, name: String(r[cName] ?? '').trim(), text: code || text, rate,
+      result: resolveSection({ text: code || text, pan, rate, form, deductorType }) });
+  });
+  return out;
+}
+
+/** Write the chosen codes into the "Section code" column; returns new workbook bytes for the core reader. */
+export function applySections(data: ArrayBuffer | Uint8Array, choices: { row: number; code: string }[]): Uint8Array {
+  const wb = XLSX.read(data, { type: 'array', cellDates: false });
+  const ws = wb.Sheets['Deductees'];
+  const hdr = (XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1 })[0] ?? []) as string[];
+  const c = hdr.indexOf('Section code');
+  for (const { row, code } of choices) {
+    if (!/^\d{4}$/.test(code)) throw new Error(`Row ${row}: "${code}" is not a 4-digit section code`);
+    ws[XLSX.utils.encode_cell({ r: row - 1, c })] = { t: 's', v: code };
+  }
+  return XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as Uint8Array;
+}
+```
+
+## src/core/sectionMap.json
+
+```json
+{
+ "1001": {
+  "ref": "392(7)",
+  "category": "TDS on Salary",
+  "nature": "Government employee (other than union)",
+  "rate": "Avg Rate",
+  "forms": [
+   "138"
+  ]
+ },
+ "1002": {
+  "ref": "392(7)",
+  "category": "TDS on Salary",
+  "nature": "Private employee",
+  "rate": "Avg Rate",
+  "forms": [
+   "138"
+  ]
+ },
+ "1003": {
+  "ref": "392(7)",
+  "category": "TDS on Salary",
+  "nature": "Indian government employee",
+  "rate": "Avg Rate",
+  "forms": [
+   "138"
+  ]
+ },
+ "1004": {
+  "ref": "392(7)",
+  "category": "TDS on PF Withdrawal",
+  "nature": "PF Withdrawal Payment",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1005": {
+  "ref": "393(1)-1(i)",
+  "category": "Commission",
+  "nature": "Insurance Commission",
+  "rate": "2%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1006": {
+  "ref": "393(1)-1(ii)",
+  "category": "Commission",
+  "nature": "Other than insurance",
+  "rate": "2%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1007": {
+  "ref": "393(1)-2(i)",
+  "category": "Rent by Individual/HUF",
+  "nature": "Rent by Individual/HUF",
+  "rate": "2%",
+  "forms": [
+   "141"
+  ]
+ },
+ "1008": {
+  "ref": "393(1)-2(ii).D(a)",
+  "category": "Rent by Specified Person",
+  "nature": "Plant & Machinery",
+  "rate": "2%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1009": {
+  "ref": "393(1)-2(ii).D(b)",
+  "category": "Rent by Specified Person",
+  "nature": "Building",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1010": {
+  "ref": "393(1)-3(i)",
+  "category": "Immovable Property",
+  "nature": "Transfer of Immovable Property (Other than agri)",
+  "rate": "1%",
+  "forms": [
+   "141"
+  ]
+ },
+ "1011": {
+  "ref": "393(1)-3(ii)",
+  "category": "Immovable Property",
+  "nature": "Joint Development Agreement",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1012": {
+  "ref": "393(1)-3(iii)",
+  "category": "Immovable Property",
+  "nature": "Compensation or enhanced compensation",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1013": {
+  "ref": "393(1)-4(i)",
+  "category": "Specified Mutual Fund",
+  "nature": "Specified Mutual Fund",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1014": {
+  "ref": "393(1)-4(ii)",
+  "category": "Business Trust",
+  "nature": "Interest",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1015": {
+  "ref": "393(1)-4(ii)",
+  "category": "Business Trust",
+  "nature": "Dividend",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1016": {
+  "ref": "393(1)-4(ii)",
+  "category": "Business Trust",
+  "nature": "Rent",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1017": {
+  "ref": "393(1)-4(iii)",
+  "category": "Capital Market Income",
+  "nature": "REIT",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1018": {
+  "ref": "393(1)-4(iv)",
+  "category": "Capital Market Income",
+  "nature": "Securitisation Trust",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1019": {
+  "ref": "393(1)-5(i)",
+  "category": "Interest Income",
+  "nature": "Interest on Securities",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1020": {
+  "ref": "393(1)-5(ii).D(a)",
+  "category": "Interest Income",
+  "nature": "Interest from Banks/Post Office/Co-op Senior Citizen",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1021": {
+  "ref": "393(1)-5(ii).D(b)",
+  "category": "Interest Income",
+  "nature": "Interest from Banks/Post Office/Co-op other than senior citizen",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1022": {
+  "ref": "393(1)-5(iii)",
+  "category": "Interest Income",
+  "nature": "Interest other than banks",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1023": {
+  "ref": "393(1)-6(i).D(a)",
+  "category": "Contract, Professional & Technical",
+  "nature": "Contract - Individual/HUF",
+  "rate": "1%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1024": {
+  "ref": "393(1)-6(i).D(b)",
+  "category": "Contract, Professional & Technical",
+  "nature": "Contract - Other than Individual/HUF",
+  "rate": "2%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1025": {
+  "ref": "393(1)-6(ii)",
+  "category": "Contract, Professional & Technical",
+  "nature": "Any sum for Contract/Professional/Commission (not covered otherwise)",
+  "rate": "2%",
+  "forms": [
+   "141"
+  ]
+ },
+ "1026": {
+  "ref": "393(1)-6(iii).D(a)",
+  "category": "Contract, Professional & Technical",
+  "nature": "Technical Service/Royalty/Film Distribution/Call Center",
+  "rate": "2%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1027": {
+  "ref": "393(1)-6(iii).D(b)",
+  "category": "Contract, Professional & Technical",
+  "nature": "Professional Service (Other)",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1028": {
+  "ref": "393(1)-6(iii).D(b)",
+  "category": "Contract, Professional & Technical",
+  "nature": "Director Remuneration",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1029": {
+  "ref": "393(1)-7",
+  "category": "Dividend",
+  "nature": "Dividend from Domestic Company",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1030": {
+  "ref": "393(1)-8(i)",
+  "category": "Others",
+  "nature": "LIC payment",
+  "rate": "2%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1031": {
+  "ref": "393(1)-8(ii)",
+  "category": "Others",
+  "nature": "Purchase of Goods",
+  "rate": "0.1%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1032": {
+  "ref": "393(1)-8(iii)",
+  "category": "Others",
+  "nature": "Specified Senior citizen",
+  "rate": "Slab rate",
+  "forms": [
+   "138"
+  ]
+ },
+ "1033": {
+  "ref": "393(1)-8(iv)",
+  "category": "Others",
+  "nature": "Perquisite & benefit (Cash)",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1034": {
+  "ref": "393(1)-8(iv)-6",
+  "category": "Others",
+  "nature": "Perquisite & benefit (Kind)",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1035": {
+  "ref": "393(1)-8(v)",
+  "category": "Others",
+  "nature": "TDS by ECO",
+  "rate": "0.1%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1036": {
+  "ref": "393(1)-8(vi)",
+  "category": "Others",
+  "nature": "VDA - individual or HUF (Cash or Kind)",
+  "rate": "1%",
+  "forms": [
+   "141"
+  ]
+ },
+ "1037": {
+  "ref": "393(1)-8(vi)",
+  "category": "Others",
+  "nature": "VDA- Other than individual (Cash)",
+  "rate": "1%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1038": {
+  "ref": "393(1)-8(vi)-6",
+  "category": "Others",
+  "nature": "VDA- Other than individual (Kind)",
+  "rate": "1%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1039": {
+  "ref": "393(2)-1",
+  "category": "Others - NRI Payments",
+  "nature": "Payment to Sportsperson/Sports Association (NRI)",
+  "rate": "20%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1040": {
+  "ref": "393(2)-2",
+  "category": "Others - NRI Payments",
+  "nature": "Interest on money borrowed in foreign currency",
+  "rate": "5%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1041": {
+  "ref": "393(2)-3",
+  "category": "Others - NRI Payments",
+  "nature": "Interest on Rupee Bond",
+  "rate": "5%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1042": {
+  "ref": "393(2)-4.E(a)",
+  "category": "Others - NRI Payments",
+  "nature": "Interest on Rupee Bond (IFSC listed before 1 July 2023)",
+  "rate": "4%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1043": {
+  "ref": "393(2)-4.E(b)",
+  "category": "Others - NRI Payments",
+  "nature": "Interest on Rupee Bond (IFSC listed on/after 1 July 2023)",
+  "rate": "9%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1044": {
+  "ref": "393(2)-5",
+  "category": "Others - NRI Payments",
+  "nature": "Interest by Infra Debt Fund (NRI)",
+  "rate": "5%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1045": {
+  "ref": "393(2)-6.E(a)",
+  "category": "Others - NRI Payments",
+  "nature": "Distributed income (Sec 223 Schedule V Table Sl. No. 3.B(a))",
+  "rate": "5%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1046": {
+  "ref": "393(2)-6.E(a)",
+  "category": "Others - NRI Payments",
+  "nature": "Distributed income (Sec 223 Schedule V Table Sl. No. 3.B(b))",
+  "rate": "10%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1047": {
+  "ref": "393(2)-7",
+  "category": "Others - NRI Payments",
+  "nature": "Distributed income (Sec 223 Schedule V Table Sl. No. 4)",
+  "rate": "12.5%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1048": {
+  "ref": "393(2)-8",
+  "category": "Others - NRI Payments",
+  "nature": "Investment Fund (Sec 224) - other than exempt under Schedule V",
+  "rate": "10%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1049": {
+  "ref": "393(2)-9",
+  "category": "Others - NRI Payments",
+  "nature": "Securitisation Trust (Sec 221)",
+  "rate": "12.5%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1050": {
+  "ref": "393(2)-10",
+  "category": "Others - NRI Payments",
+  "nature": "Units of MF (Schedule VII Table Sl. No. 20 or 21) / Specified Company",
+  "rate": "20%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1051": {
+  "ref": "393(2)-11",
+  "category": "Others - NRI Payments",
+  "nature": "Units referred to in Sec 208",
+  "rate": "10%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1052": {
+  "ref": "393(2)-12",
+  "category": "Others - NRI Payments",
+  "nature": "Long-term capital gains - Transfer of units (Sec 208)",
+  "rate": "10%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1053": {
+  "ref": "393(2)-13",
+  "category": "Others - NRI Payments",
+  "nature": "Interest/Dividends - Bonds/GDR (Sec 209)",
+  "rate": "Rate in force",
+  "forms": [
+   "144"
+  ]
+ },
+ "1054": {
+  "ref": "393(2)-14",
+  "category": "Others - NRI Payments",
+  "nature": "Long-term capital gains - Bonds/GDR (Sec 209)",
+  "rate": "12.5%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1055": {
+  "ref": "393(2)-15",
+  "category": "Others - NRI Payments",
+  "nature": "Securities (Sec 210(1) Table Sl. No. 1)",
+  "rate": "20%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1056": {
+  "ref": "393(2)-16",
+  "category": "Others - NRI Payments",
+  "nature": "Securities (Sec 210(1) Table Sl. No. 1)",
+  "rate": "10%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1057": {
+  "ref": "393(2)-17",
+  "category": "Others - NRI Payments",
+  "nature": "Interest (not under Serial 2-5) or other sum (not being Salary)",
+  "rate": "Rate in force",
+  "forms": [
+   "144"
+  ]
+ },
+ "1058": {
+  "ref": "393(3)-1",
+  "category": "Payment to any person",
+  "nature": "Lottery, Puzzle, Card Game, Gambling (Cash)",
+  "rate": "30%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1059": {
+  "ref": "393(3)-1-Note-2",
+  "category": "Payment to any person",
+  "nature": "Lottery, Puzzle, Card Game, Gambling (Kind)",
+  "rate": "30%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1060": {
+  "ref": "393(3)-2",
+  "category": "Payment to any person",
+  "nature": "Online Gaming - Net Winnings (Cash)",
+  "rate": "30%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1061": {
+  "ref": "393(3)-2-Note-2",
+  "category": "Payment to any person",
+  "nature": "Online Gaming - Net Winnings (Kind)",
+  "rate": "30%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1062": {
+  "ref": "393(3)-3",
+  "category": "Payment to any person",
+  "nature": "Horse Race Winnings",
+  "rate": "30%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1063": {
+  "ref": "393(3)-4",
+  "category": "Payment to any person",
+  "nature": "Commission on Lottery Sale",
+  "rate": "2%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1064": {
+  "ref": "393(3)-5.D(a)",
+  "category": "Payment to any person",
+  "nature": "TDS on Cash Withdrawal (Co-operative Society)",
+  "rate": "2%",
+  "forms": [
+   "140",
+   "144"
+  ]
+ },
+ "1065": {
+  "ref": "393(3)-5.D(b)",
+  "category": "Payment to any person",
+  "nature": "TDS on Cash Withdrawal (other than co-operative Society)",
+  "rate": "2%",
+  "forms": [
+   "140",
+   "144"
+  ]
+ },
+ "1066": {
+  "ref": "393(3)-6",
+  "category": "Payment to any person",
+  "nature": "NSS Withdrawal",
+  "rate": "10%",
+  "forms": [
+   "140",
+   "144"
+  ]
+ },
+ "1067": {
+  "ref": "393(3)-7",
+  "category": "Payment to any person",
+  "nature": "Payment to Partner",
+  "rate": "10%",
+  "forms": [
+   "140",
+   "144"
+  ]
+ },
+ "1068": {
+  "ref": "394-1",
+  "category": "TCS",
+  "nature": "Sale of Alcoholic Liquor for Human Consumption",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1069": {
+  "ref": "394-2",
+  "category": "TCS",
+  "nature": "Sale of Tendu Leaves",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1070": {
+  "ref": "394-3",
+  "category": "TCS",
+  "nature": "Timber obtained under forest lease",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1071": {
+  "ref": "394-3",
+  "category": "TCS",
+  "nature": "Timber obtained other than forest lease",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1072": {
+  "ref": "394-3",
+  "category": "TCS",
+  "nature": "Other Forest Product",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1073": {
+  "ref": "394-4",
+  "category": "TCS",
+  "nature": "Sale of Scrap",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1074": {
+  "ref": "394-5",
+  "category": "TCS",
+  "nature": "Sale of Minerals (Coal, Lignite, Iron Ore)",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1075": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Motor Vehicle (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1076": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Wristwatch (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1077": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Art Piece (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1078": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Coin/Stamp (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1079": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Yacht/Boat/Helicopter (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1080": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Sunglasses (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1081": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Handbag/Purse (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1082": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Shoes (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1083": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Sportswear & Sport Equipment (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1084": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Home Theatre (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1085": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Horse (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1086": {
+  "ref": "394-7",
+  "category": "TCS",
+  "nature": "Remittance under LRS - Education/Medical",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1087": {
+  "ref": "394-7",
+  "category": "TCS",
+  "nature": "Remittance under LRS - Other Purposes",
+  "rate": "20%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1088": {
+  "ref": "394(1)-8.D(a)",
+  "category": "TCS",
+  "nature": "Overseas Tour Package (up to threshold limit)",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1089": {
+  "ref": "394(1)-8.D(b)",
+  "category": "TCS",
+  "nature": "Overseas Tour Package (above threshold limit)",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1090": {
+  "ref": "394-9",
+  "category": "TCS",
+  "nature": "Parking Lot",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1091": {
+  "ref": "394-9",
+  "category": "TCS",
+  "nature": "Toll Plaza",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1092": {
+  "ref": "394-9",
+  "category": "TCS",
+  "nature": "Mine or Quarry (except oil mining)",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ }
 }
 ```

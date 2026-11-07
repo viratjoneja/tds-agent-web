@@ -19,6 +19,7 @@ Four files follow this brief. Put them in `src/core/` **exactly as given** and i
 | `src/core/review.ts` | `reviewModel(lines)` → totals, problems, points to review, deductor details, challan / deductee / salary tables |
 | `src/core/template_columns.json` | column headings shared with the Python tool |
 | `src/core/csi.ts` | **Phase 1.** `parseCsi(text, fileName)` → CSI header info (challan count, TAN, name, download date, valid file name); `checkCsi(csi, lines, TARGET_FVU)` → findings `{level: 'error'│'warning'│'info', message}` |
+| `src/core/sectionCodes.ts` + `src/core/sectionMap.json` | **Phase 2.** `makeTemplateWithSection(form)` → blank workbook with a "Section (as in working)" column; `suggestSections(bytes, form, deductorType)` → one suggestion per Deductees row `{row, pan, name, text, rate, result: {status: 'given'│'auto'│'choose'│'error', code, reason, options, rateNote}}`; `applySections(bytes, [{row, code}])` → workbook bytes with codes filled in, for `readInputWorkbook`; `SECTION_MAP[code]` → description |
 | `src/core/fvuResult.ts` | **Phase 1.** `readErrFile(text, lines)`, `readWarningFile(html, lines)` → issues tied to the challan / deductee / employee row with a plain-English `hint`; `readStatistics(html)`, `compareStatistics(stats, rv.totals)` |
 
 The core imports each other with `.ts` extensions (e.g. `from './protean.ts'`): enable `"allowImportingTsExtensions": true` and `"noEmit": true` in `tsconfig.json` (Vite handles this), or remove the extensions if your setup needs that — change nothing else. The JSON import uses `with { type: 'json' }`; if the toolchain objects, change it to a plain `import cols from './template_columns.json'`.
@@ -76,6 +77,26 @@ npm install https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
 - statistics report `<name>.html` → `readStatistics(html)` then `compareStatistics(stats, rv.totals)`
 
 Read all three with `TextDecoder('latin1')`. Show one table of issues: Errors first (red), then Warnings (amber); columns: Row (`where`), FVU code, FVU message, **What to do** (`hint`, or "See the FVU message" when empty). Group identical codes with a count ("T-FV-4015 × 79"). If the statistics agree with the return, show a green "FVU totals match the return"; otherwise list the differences. Keep the built `lines` in memory so this step works without rebuilding; if the page was reloaded, ask the user to rebuild first. Never offer to edit the `.txt` — fixes are made in the input workbook, then rebuild.
+
+## Phase 2 additions (section codes worked out by the tool)
+
+**A. Template.** The "Download blank input workbook" button now uses `makeTemplateWithSection(form)`. Help text: *"In Deductees, either type the 4-digit Section code, or leave it blank and copy the section as it appears in your working into 'Section (as in working)' - e.g. 194C, 94Q, CONTT. 194 C, Rent building, 393(1)-6(i).D(a), Salary. The tool works out the code and shows you why."*
+
+**B. New step "Section codes"** between Upload and Build (always shown, even if every row has a code):
+1. Get the deductor type: from the Deductor sheet (`readInputWorkbook(...).deductor?.deductor_type`) or from the uploaded .fvu (`deductorFromFvu(text).deductor.deductor_type`).
+2. `rows = suggestSections(bytes, form, deductorType)`. Show a table: Row, Name, PAN, Rate %, Section as written, **Code**, **Why** (`result.reason`), Note (`result.rateNote`, amber).
+   - `given` / `auto`: show the code (green); the user may override it with a drop-down of all codes for this form (`Object.entries(SECTION_MAP).filter(([,v]) => v.forms.includes(form))`).
+   - `choose`: amber row; a required drop-down of `result.options` (show `label`); no default.
+   - `error`: red row with `result.reason`; the user must fix the workbook (wrong form, unsupported section) or pick a code from the full list.
+   - Summary line: "N worked out, N need your choice, N problems". Filter buttons for each status.
+3. Button **"Apply codes"** (enabled only when every row has a code): `bytes2 = applySections(bytes, rows.map(r => ({row: r.row, code: chosen code})))`, then continue to Build with `readInputWorkbook(bytes2, form, quarter)` exactly as before. Also offer **"Download workbook with codes"** (`bytes2` as .xlsx) so the user can keep it.
+4. Never change a code silently; never choose for a `choose` row. Rate notes are information only (the code stays as the working shows - SOP rule 11).
+
+### Phase 2 acceptance tests
+- Template from `makeTemplateWithSection('140')` has "Section (as in working)" right after "Section code".
+- Take `test/fixtures/f140.xlsx`, clear the 3 Section codes and type 194C / 194J(b) / PURCHASE GOODS 194 Q in "Section (as in working)": the step shows 1023 / 1027 / 1031 with reasons, and the built return equals `f140.txt` (apart from the date in line 1).
+- A row with "194J" and no rate shows a choice of 1026 / 1027 / 1028; a row with "194IA" in Form 140 shows an error (belongs in Form 141).
+- Terminal: `node test/phase2.test.ts`.
 
 ## Text to show on every page (footer)
 

@@ -1,0 +1,834 @@
+{
+ "1001": {
+  "ref": "392(7)",
+  "category": "TDS on Salary",
+  "nature": "Government employee (other than union)",
+  "rate": "Avg Rate",
+  "forms": [
+   "138"
+  ]
+ },
+ "1002": {
+  "ref": "392(7)",
+  "category": "TDS on Salary",
+  "nature": "Private employee",
+  "rate": "Avg Rate",
+  "forms": [
+   "138"
+  ]
+ },
+ "1003": {
+  "ref": "392(7)",
+  "category": "TDS on Salary",
+  "nature": "Indian government employee",
+  "rate": "Avg Rate",
+  "forms": [
+   "138"
+  ]
+ },
+ "1004": {
+  "ref": "392(7)",
+  "category": "TDS on PF Withdrawal",
+  "nature": "PF Withdrawal Payment",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1005": {
+  "ref": "393(1)-1(i)",
+  "category": "Commission",
+  "nature": "Insurance Commission",
+  "rate": "2%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1006": {
+  "ref": "393(1)-1(ii)",
+  "category": "Commission",
+  "nature": "Other than insurance",
+  "rate": "2%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1007": {
+  "ref": "393(1)-2(i)",
+  "category": "Rent by Individual/HUF",
+  "nature": "Rent by Individual/HUF",
+  "rate": "2%",
+  "forms": [
+   "141"
+  ]
+ },
+ "1008": {
+  "ref": "393(1)-2(ii).D(a)",
+  "category": "Rent by Specified Person",
+  "nature": "Plant & Machinery",
+  "rate": "2%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1009": {
+  "ref": "393(1)-2(ii).D(b)",
+  "category": "Rent by Specified Person",
+  "nature": "Building",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1010": {
+  "ref": "393(1)-3(i)",
+  "category": "Immovable Property",
+  "nature": "Transfer of Immovable Property (Other than agri)",
+  "rate": "1%",
+  "forms": [
+   "141"
+  ]
+ },
+ "1011": {
+  "ref": "393(1)-3(ii)",
+  "category": "Immovable Property",
+  "nature": "Joint Development Agreement",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1012": {
+  "ref": "393(1)-3(iii)",
+  "category": "Immovable Property",
+  "nature": "Compensation or enhanced compensation",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1013": {
+  "ref": "393(1)-4(i)",
+  "category": "Specified Mutual Fund",
+  "nature": "Specified Mutual Fund",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1014": {
+  "ref": "393(1)-4(ii)",
+  "category": "Business Trust",
+  "nature": "Interest",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1015": {
+  "ref": "393(1)-4(ii)",
+  "category": "Business Trust",
+  "nature": "Dividend",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1016": {
+  "ref": "393(1)-4(ii)",
+  "category": "Business Trust",
+  "nature": "Rent",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1017": {
+  "ref": "393(1)-4(iii)",
+  "category": "Capital Market Income",
+  "nature": "REIT",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1018": {
+  "ref": "393(1)-4(iv)",
+  "category": "Capital Market Income",
+  "nature": "Securitisation Trust",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1019": {
+  "ref": "393(1)-5(i)",
+  "category": "Interest Income",
+  "nature": "Interest on Securities",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1020": {
+  "ref": "393(1)-5(ii).D(a)",
+  "category": "Interest Income",
+  "nature": "Interest from Banks/Post Office/Co-op Senior Citizen",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1021": {
+  "ref": "393(1)-5(ii).D(b)",
+  "category": "Interest Income",
+  "nature": "Interest from Banks/Post Office/Co-op other than senior citizen",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1022": {
+  "ref": "393(1)-5(iii)",
+  "category": "Interest Income",
+  "nature": "Interest other than banks",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1023": {
+  "ref": "393(1)-6(i).D(a)",
+  "category": "Contract, Professional & Technical",
+  "nature": "Contract - Individual/HUF",
+  "rate": "1%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1024": {
+  "ref": "393(1)-6(i).D(b)",
+  "category": "Contract, Professional & Technical",
+  "nature": "Contract - Other than Individual/HUF",
+  "rate": "2%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1025": {
+  "ref": "393(1)-6(ii)",
+  "category": "Contract, Professional & Technical",
+  "nature": "Any sum for Contract/Professional/Commission (not covered otherwise)",
+  "rate": "2%",
+  "forms": [
+   "141"
+  ]
+ },
+ "1026": {
+  "ref": "393(1)-6(iii).D(a)",
+  "category": "Contract, Professional & Technical",
+  "nature": "Technical Service/Royalty/Film Distribution/Call Center",
+  "rate": "2%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1027": {
+  "ref": "393(1)-6(iii).D(b)",
+  "category": "Contract, Professional & Technical",
+  "nature": "Professional Service (Other)",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1028": {
+  "ref": "393(1)-6(iii).D(b)",
+  "category": "Contract, Professional & Technical",
+  "nature": "Director Remuneration",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1029": {
+  "ref": "393(1)-7",
+  "category": "Dividend",
+  "nature": "Dividend from Domestic Company",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1030": {
+  "ref": "393(1)-8(i)",
+  "category": "Others",
+  "nature": "LIC payment",
+  "rate": "2%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1031": {
+  "ref": "393(1)-8(ii)",
+  "category": "Others",
+  "nature": "Purchase of Goods",
+  "rate": "0.1%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1032": {
+  "ref": "393(1)-8(iii)",
+  "category": "Others",
+  "nature": "Specified Senior citizen",
+  "rate": "Slab rate",
+  "forms": [
+   "138"
+  ]
+ },
+ "1033": {
+  "ref": "393(1)-8(iv)",
+  "category": "Others",
+  "nature": "Perquisite & benefit (Cash)",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1034": {
+  "ref": "393(1)-8(iv)-6",
+  "category": "Others",
+  "nature": "Perquisite & benefit (Kind)",
+  "rate": "10%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1035": {
+  "ref": "393(1)-8(v)",
+  "category": "Others",
+  "nature": "TDS by ECO",
+  "rate": "0.1%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1036": {
+  "ref": "393(1)-8(vi)",
+  "category": "Others",
+  "nature": "VDA - individual or HUF (Cash or Kind)",
+  "rate": "1%",
+  "forms": [
+   "141"
+  ]
+ },
+ "1037": {
+  "ref": "393(1)-8(vi)",
+  "category": "Others",
+  "nature": "VDA- Other than individual (Cash)",
+  "rate": "1%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1038": {
+  "ref": "393(1)-8(vi)-6",
+  "category": "Others",
+  "nature": "VDA- Other than individual (Kind)",
+  "rate": "1%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1039": {
+  "ref": "393(2)-1",
+  "category": "Others - NRI Payments",
+  "nature": "Payment to Sportsperson/Sports Association (NRI)",
+  "rate": "20%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1040": {
+  "ref": "393(2)-2",
+  "category": "Others - NRI Payments",
+  "nature": "Interest on money borrowed in foreign currency",
+  "rate": "5%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1041": {
+  "ref": "393(2)-3",
+  "category": "Others - NRI Payments",
+  "nature": "Interest on Rupee Bond",
+  "rate": "5%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1042": {
+  "ref": "393(2)-4.E(a)",
+  "category": "Others - NRI Payments",
+  "nature": "Interest on Rupee Bond (IFSC listed before 1 July 2023)",
+  "rate": "4%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1043": {
+  "ref": "393(2)-4.E(b)",
+  "category": "Others - NRI Payments",
+  "nature": "Interest on Rupee Bond (IFSC listed on/after 1 July 2023)",
+  "rate": "9%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1044": {
+  "ref": "393(2)-5",
+  "category": "Others - NRI Payments",
+  "nature": "Interest by Infra Debt Fund (NRI)",
+  "rate": "5%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1045": {
+  "ref": "393(2)-6.E(a)",
+  "category": "Others - NRI Payments",
+  "nature": "Distributed income (Sec 223 Schedule V Table Sl. No. 3.B(a))",
+  "rate": "5%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1046": {
+  "ref": "393(2)-6.E(a)",
+  "category": "Others - NRI Payments",
+  "nature": "Distributed income (Sec 223 Schedule V Table Sl. No. 3.B(b))",
+  "rate": "10%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1047": {
+  "ref": "393(2)-7",
+  "category": "Others - NRI Payments",
+  "nature": "Distributed income (Sec 223 Schedule V Table Sl. No. 4)",
+  "rate": "12.5%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1048": {
+  "ref": "393(2)-8",
+  "category": "Others - NRI Payments",
+  "nature": "Investment Fund (Sec 224) - other than exempt under Schedule V",
+  "rate": "10%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1049": {
+  "ref": "393(2)-9",
+  "category": "Others - NRI Payments",
+  "nature": "Securitisation Trust (Sec 221)",
+  "rate": "12.5%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1050": {
+  "ref": "393(2)-10",
+  "category": "Others - NRI Payments",
+  "nature": "Units of MF (Schedule VII Table Sl. No. 20 or 21) / Specified Company",
+  "rate": "20%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1051": {
+  "ref": "393(2)-11",
+  "category": "Others - NRI Payments",
+  "nature": "Units referred to in Sec 208",
+  "rate": "10%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1052": {
+  "ref": "393(2)-12",
+  "category": "Others - NRI Payments",
+  "nature": "Long-term capital gains - Transfer of units (Sec 208)",
+  "rate": "10%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1053": {
+  "ref": "393(2)-13",
+  "category": "Others - NRI Payments",
+  "nature": "Interest/Dividends - Bonds/GDR (Sec 209)",
+  "rate": "Rate in force",
+  "forms": [
+   "144"
+  ]
+ },
+ "1054": {
+  "ref": "393(2)-14",
+  "category": "Others - NRI Payments",
+  "nature": "Long-term capital gains - Bonds/GDR (Sec 209)",
+  "rate": "12.5%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1055": {
+  "ref": "393(2)-15",
+  "category": "Others - NRI Payments",
+  "nature": "Securities (Sec 210(1) Table Sl. No. 1)",
+  "rate": "20%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1056": {
+  "ref": "393(2)-16",
+  "category": "Others - NRI Payments",
+  "nature": "Securities (Sec 210(1) Table Sl. No. 1)",
+  "rate": "10%",
+  "forms": [
+   "144"
+  ]
+ },
+ "1057": {
+  "ref": "393(2)-17",
+  "category": "Others - NRI Payments",
+  "nature": "Interest (not under Serial 2-5) or other sum (not being Salary)",
+  "rate": "Rate in force",
+  "forms": [
+   "144"
+  ]
+ },
+ "1058": {
+  "ref": "393(3)-1",
+  "category": "Payment to any person",
+  "nature": "Lottery, Puzzle, Card Game, Gambling (Cash)",
+  "rate": "30%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1059": {
+  "ref": "393(3)-1-Note-2",
+  "category": "Payment to any person",
+  "nature": "Lottery, Puzzle, Card Game, Gambling (Kind)",
+  "rate": "30%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1060": {
+  "ref": "393(3)-2",
+  "category": "Payment to any person",
+  "nature": "Online Gaming - Net Winnings (Cash)",
+  "rate": "30%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1061": {
+  "ref": "393(3)-2-Note-2",
+  "category": "Payment to any person",
+  "nature": "Online Gaming - Net Winnings (Kind)",
+  "rate": "30%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1062": {
+  "ref": "393(3)-3",
+  "category": "Payment to any person",
+  "nature": "Horse Race Winnings",
+  "rate": "30%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1063": {
+  "ref": "393(3)-4",
+  "category": "Payment to any person",
+  "nature": "Commission on Lottery Sale",
+  "rate": "2%",
+  "forms": [
+   "140"
+  ]
+ },
+ "1064": {
+  "ref": "393(3)-5.D(a)",
+  "category": "Payment to any person",
+  "nature": "TDS on Cash Withdrawal (Co-operative Society)",
+  "rate": "2%",
+  "forms": [
+   "140",
+   "144"
+  ]
+ },
+ "1065": {
+  "ref": "393(3)-5.D(b)",
+  "category": "Payment to any person",
+  "nature": "TDS on Cash Withdrawal (other than co-operative Society)",
+  "rate": "2%",
+  "forms": [
+   "140",
+   "144"
+  ]
+ },
+ "1066": {
+  "ref": "393(3)-6",
+  "category": "Payment to any person",
+  "nature": "NSS Withdrawal",
+  "rate": "10%",
+  "forms": [
+   "140",
+   "144"
+  ]
+ },
+ "1067": {
+  "ref": "393(3)-7",
+  "category": "Payment to any person",
+  "nature": "Payment to Partner",
+  "rate": "10%",
+  "forms": [
+   "140",
+   "144"
+  ]
+ },
+ "1068": {
+  "ref": "394-1",
+  "category": "TCS",
+  "nature": "Sale of Alcoholic Liquor for Human Consumption",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1069": {
+  "ref": "394-2",
+  "category": "TCS",
+  "nature": "Sale of Tendu Leaves",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1070": {
+  "ref": "394-3",
+  "category": "TCS",
+  "nature": "Timber obtained under forest lease",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1071": {
+  "ref": "394-3",
+  "category": "TCS",
+  "nature": "Timber obtained other than forest lease",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1072": {
+  "ref": "394-3",
+  "category": "TCS",
+  "nature": "Other Forest Product",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1073": {
+  "ref": "394-4",
+  "category": "TCS",
+  "nature": "Sale of Scrap",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1074": {
+  "ref": "394-5",
+  "category": "TCS",
+  "nature": "Sale of Minerals (Coal, Lignite, Iron Ore)",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1075": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Motor Vehicle (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1076": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Wristwatch (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1077": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Art Piece (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1078": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Coin/Stamp (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1079": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Yacht/Boat/Helicopter (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1080": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Sunglasses (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1081": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Handbag/Purse (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1082": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Shoes (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1083": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Sportswear & Sport Equipment (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1084": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Home Theatre (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1085": {
+  "ref": "394-6",
+  "category": "TCS",
+  "nature": "Horse (Value > Rs 10 Lakh)",
+  "rate": "1%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1086": {
+  "ref": "394-7",
+  "category": "TCS",
+  "nature": "Remittance under LRS - Education/Medical",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1087": {
+  "ref": "394-7",
+  "category": "TCS",
+  "nature": "Remittance under LRS - Other Purposes",
+  "rate": "20%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1088": {
+  "ref": "394(1)-8.D(a)",
+  "category": "TCS",
+  "nature": "Overseas Tour Package (up to threshold limit)",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1089": {
+  "ref": "394(1)-8.D(b)",
+  "category": "TCS",
+  "nature": "Overseas Tour Package (above threshold limit)",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1090": {
+  "ref": "394-9",
+  "category": "TCS",
+  "nature": "Parking Lot",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1091": {
+  "ref": "394-9",
+  "category": "TCS",
+  "nature": "Toll Plaza",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ },
+ "1092": {
+  "ref": "394-9",
+  "category": "TCS",
+  "nature": "Mine or Quarry (except oil mining)",
+  "rate": "2%",
+  "forms": [
+   "143"
+  ]
+ }
+}
