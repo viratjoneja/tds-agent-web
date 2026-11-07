@@ -33,5 +33,5 @@ Node 22.6 or later. `npm install`, then `node test/parity.test.ts`.
 | 1 | CSI checks (TAN, challan count, stale CSI, file name) and FVU result reader | done (1.1.0) |
 | 2 | Section codes worked out from the section as written in the working | done (1.2.0) |
 | 3 | Rows matched to challans by rules; challan matching review page | done (1.3.0) |
-| 4 | AI layer: read challan PDFs; propose adjustments for exceptions (needs decisions: provider, data handling) | planned |
+| 4 | Challan receipt PDFs read by rules in the browser (Gemini fallback, masked); Gemini proposals for open challan points, masked, checked by rules, applied only on approval | done (1.4.0) |
 | 5 | Tests on every rule; local checks on real Q2 cases | ongoing |

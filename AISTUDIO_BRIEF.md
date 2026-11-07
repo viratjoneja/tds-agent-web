@@ -33,7 +33,9 @@ npm install https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
 ## Privacy rules (mandatory)
 
 - **All processing happens in the browser.** Files are read with `FileReader` / `file.arrayBuffer()` and never uploaded. **No backend, no database, no storage** (not even localStorage) of file contents.
-- **Do not call the Gemini API or any other API** with workbook contents, PANs, TANs, names or amounts. The engine is deterministic and needs no AI. Remove any default Gemini client the template project includes.
+- **Gemini is called in exactly two places, both optional, both masked (Phase 4 below)**: reading a challan receipt the rules could not read, and proposing challans for rows the rules left open. Nothing else ever goes to Gemini or any other API - never the workbook, PANs, TANs, names, BSR codes or challan serial numbers. The engine itself is deterministic and needs no AI.
+- Before each Gemini call, **show the user exactly what will be sent** (the masked payload) and send only after they click **"Send to Gemini"**. A setting "Never use AI" (default off) hides both buttons.
+- **The Gemini API key must never reach the browser.** Calls go through a small server route (AI Studio's Cloud Run deployment with the key as a server secret, or `/api/gemini` on the hosting site) that forwards the request body unchanged and stores nothing. Use a paid-tier (billing-enabled) key so Google does not use the data to improve its products. Use the current Gemini Flash model with `responseMimeType: 'application/json'` and the `responseSchema` the core gives.
 - No analytics or logging that captures file contents.
 - Show this line near the upload box: *"Your files are processed in your browser and are never uploaded."*
 
@@ -108,7 +110,7 @@ Read all three with `TextDecoder('latin1')`. Show one table of issues: Errors fi
 2. `res = matchChallans(challans, rows)`. Show three panels:
    - **Rows** table: Row, Name, PAN, Section, Date deducted, Tax, **Challan**, **Why** (`reason`). `given` / `matched` green; `exception` red with a drop-down to pick a challan (all challans, showing number, date, amount, balance) - the user's choice is applied as typed-in.
    - **Challans** table from `res.challans`: Challan, Date, Tax, Used by this return, **Balance**, Interest paid, Interest due, Notes. Balance > 0: amber, note "part of this challan belongs to another form, or is excess - it must be used there". Interest due > paid: red.
-   - **Points needing a decision** from `res.exceptions` (one card each, `message`): duplicates, shortfalls, rows too large for any challan, challans dated before the deduction, interest short. These are NOT decided by the tool. (Phase 4 will add AI proposals here, applied only after approval.)
+   - **Points needing a decision** from `res.exceptions` (one card each, `message`): duplicates, shortfalls, rows too large for any challan, challans dated before the deduction, interest short. These are NOT decided by the rules (Phase 4 adds AI proposals here, applied only after the user approves).
 3. Button **"Apply challan links"** - enabled only when every row has a challan (matched, given, or chosen by the user): `bytes3 = applyChallanMatches(bytes2, rows.map(r => ({row, challanNo})))`, then Build uses `readInputWorkbook(bytes3, form, quarter)` exactly as before. Offer **"Download workbook with challan links"**.
 4. If the user re-runs matching after editing the workbook, start again from step 1 - never keep stale links.
 
@@ -116,6 +118,28 @@ Read all three with `TextDecoder('latin1')`. Show one table of issues: Errors fi
 - `test/fixtures/f140.xlsx` with its 'Challan #' cells cleared: matching links rows 1,2 → challan 1 and row 3 → challan 2 (as originally), and the built return equals `f140.txt` apart from the date in line 1.
 - Two challans dated the same day that could each take a month's rows → the rows show as needing a decision (no guess) and a possible-duplicate card appears.
 - Terminal: `node test/phase3.test.ts`.
+
+## Phase 4 additions (challan receipts read by the tool; AI proposals for open points)
+
+Add `src/core/challanPdf.ts` and `src/core/aiExceptions.ts` exactly as given, and the npm package `pdfjs-dist@4.10.38` (in the browser: `import * as pdfjs from 'pdfjs-dist'` and set `pdfjs.GlobalWorkerOptions.workerSrc` to the bundled `pdf.worker.min.mjs` via Vite's `?url` import).
+
+**A. "Add challans from receipts"** (on the Challans step, before matching). The user drops the challan receipt PDFs downloaded from the e-filing portal (several at once).
+1. `results = await readChallanPdfs(await Promise.all(fileList.map(async f => ({ name: f.name, data: new Uint8Array(await f.arrayBuffer()) }))), pdfjs)` - runs in the browser, nothing is sent anywhere. Show one line per file: green "read" with BSR / challan no / date / tax / interest / sections, or red with `problems`. Files that are not receipts (acknowledgements etc.) show "not a challan receipt" in grey.
+2. For a red file whose text was found but whose layout was not recognised, show **"Try with Gemini"**: first show `maskReceiptText(text)` (identifiers replaced by placeholders) in a box for the user to read, then on **"Send to Gemini"** post `geminiChallanRequest(masked)` to the server route and pass the reply text to `fromGemini(reply)`. Its result goes through the same cross-checks; if it fails, show the problems - the user types that challan in. Scanned (image-only) PDFs: no AI button; message as returned.
+3. **"Add N challans to the workbook"**: `bytes = addChallansToWorkbook(bytes, receipts)` (only green ones, duplicates removed), then continue to matching.
+
+**B. "Ask Gemini to propose" on the Points needing a decision panel** (only when `res.exceptions` has rows open).
+1. `payload = maskedPayload(challans, rows, res)`. Show it as a readable table ("This is all that will be sent: challan numbers, dates, amounts, major head, section breakup; rows as numbers with month, section, company/non-company and tax. No PAN, name, TAN, BSR or challan serial.") with **"Send to Gemini"**.
+2. Post `geminiExceptionRequest(payload)`; pass the reply to `checkProposals(reply, challans, rows, res)`. `geminiExceptionRequest` throws if anything that looks like a PAN/TAN slipped in - show that error and send nothing.
+3. Show each proposal as a card: rows, challan, Gemini's `explanation`, and the rule `checks`. Verdicts: **accepted** (green, pre-ticked), **needs-approval** (amber, NOT ticked - the user must tick it after reading the checks; e.g. a duplicate deposit used for a later month), **rejected** (red, cannot be ticked). Also list `unresolved`.
+4. **"Apply ticked proposals"**: `{result, links} = applyProposals(challans, rows, res, ticked)`; replace `res` with `result` and redraw all three panels (the rules re-check everything; anything they still flag stays visible as a point needing a decision, with the user's approval noted). The Apply challan links button then uses `links`.
+5. Never apply anything without the click; never send again automatically.
+
+### Phase 4 acceptance tests
+- `node test/phase4.test.ts` passes (made-up data, Gemini answers mocked).
+- A made-up receipt whose section amounts do not add up to the tax is refused, not guessed.
+- With two same-date challans and no major head, the rules leave the rows open; a mocked Gemini answer linking them sensibly is accepted, one naming a non-existent row is rejected, and one using a duplicate challan for a later month is "needs approval".
+- With "Never use AI" on, no request is ever made (check the browser's network tab).
 
 ## Text to show on every page (footer)
 
@@ -143,4 +167,4 @@ The same checks run from a terminal: `node test/phase1.test.ts`.
 
 ## Hosting on an existing site
 
-The app is entirely static once built (`npm run build` → `dist/`). Either deploy it from AI Studio to Cloud Run and link to it from the site, or set Vite's `base` (e.g. `/tds-tool/`) and copy `dist/` into the existing site under that path. No server code is needed either way.
+The app is entirely static once built (`npm run build` → `dist/`). Either deploy it from AI Studio to Cloud Run and link to it from the site, or set Vite's `base` (e.g. `/tds-tool/`) and copy `dist/` into the existing site under that path. Without the Phase 4 AI buttons no server code is needed. With them, add the one server route described under Privacy rules (key as a server secret, forwards the request, stores and logs nothing); if the site is static-only, deploy from AI Studio to Cloud Run, which provides that.

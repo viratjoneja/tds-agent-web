@@ -33,7 +33,9 @@ npm install https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
 ## Privacy rules (mandatory)
 
 - **All processing happens in the browser.** Files are read with `FileReader` / `file.arrayBuffer()` and never uploaded. **No backend, no database, no storage** (not even localStorage) of file contents.
-- **Do not call the Gemini API or any other API** with workbook contents, PANs, TANs, names or amounts. The engine is deterministic and needs no AI. Remove any default Gemini client the template project includes.
+- **Gemini is called in exactly two places, both optional, both masked (Phase 4 below)**: reading a challan receipt the rules could not read, and proposing challans for rows the rules left open. Nothing else ever goes to Gemini or any other API - never the workbook, PANs, TANs, names, BSR codes or challan serial numbers. The engine itself is deterministic and needs no AI.
+- Before each Gemini call, **show the user exactly what will be sent** (the masked payload) and send only after they click **"Send to Gemini"**. A setting "Never use AI" (default off) hides both buttons.
+- **The Gemini API key must never reach the browser.** Calls go through a small server route (AI Studio's Cloud Run deployment with the key as a server secret, or `/api/gemini` on the hosting site) that forwards the request body unchanged and stores nothing. Use a paid-tier (billing-enabled) key so Google does not use the data to improve its products. Use the current Gemini Flash model with `responseMimeType: 'application/json'` and the `responseSchema` the core gives.
 - No analytics or logging that captures file contents.
 - Show this line near the upload box: *"Your files are processed in your browser and are never uploaded."*
 
@@ -108,7 +110,7 @@ Read all three with `TextDecoder('latin1')`. Show one table of issues: Errors fi
 2. `res = matchChallans(challans, rows)`. Show three panels:
    - **Rows** table: Row, Name, PAN, Section, Date deducted, Tax, **Challan**, **Why** (`reason`). `given` / `matched` green; `exception` red with a drop-down to pick a challan (all challans, showing number, date, amount, balance) - the user's choice is applied as typed-in.
    - **Challans** table from `res.challans`: Challan, Date, Tax, Used by this return, **Balance**, Interest paid, Interest due, Notes. Balance > 0: amber, note "part of this challan belongs to another form, or is excess - it must be used there". Interest due > paid: red.
-   - **Points needing a decision** from `res.exceptions` (one card each, `message`): duplicates, shortfalls, rows too large for any challan, challans dated before the deduction, interest short. These are NOT decided by the tool. (Phase 4 will add AI proposals here, applied only after approval.)
+   - **Points needing a decision** from `res.exceptions` (one card each, `message`): duplicates, shortfalls, rows too large for any challan, challans dated before the deduction, interest short. These are NOT decided by the rules (Phase 4 adds AI proposals here, applied only after the user approves).
 3. Button **"Apply challan links"** - enabled only when every row has a challan (matched, given, or chosen by the user): `bytes3 = applyChallanMatches(bytes2, rows.map(r => ({row, challanNo})))`, then Build uses `readInputWorkbook(bytes3, form, quarter)` exactly as before. Offer **"Download workbook with challan links"**.
 4. If the user re-runs matching after editing the workbook, start again from step 1 - never keep stale links.
 
@@ -116,6 +118,28 @@ Read all three with `TextDecoder('latin1')`. Show one table of issues: Errors fi
 - `test/fixtures/f140.xlsx` with its 'Challan #' cells cleared: matching links rows 1,2 → challan 1 and row 3 → challan 2 (as originally), and the built return equals `f140.txt` apart from the date in line 1.
 - Two challans dated the same day that could each take a month's rows → the rows show as needing a decision (no guess) and a possible-duplicate card appears.
 - Terminal: `node test/phase3.test.ts`.
+
+## Phase 4 additions (challan receipts read by the tool; AI proposals for open points)
+
+Add `src/core/challanPdf.ts` and `src/core/aiExceptions.ts` exactly as given, and the npm package `pdfjs-dist@4.10.38` (in the browser: `import * as pdfjs from 'pdfjs-dist'` and set `pdfjs.GlobalWorkerOptions.workerSrc` to the bundled `pdf.worker.min.mjs` via Vite's `?url` import).
+
+**A. "Add challans from receipts"** (on the Challans step, before matching). The user drops the challan receipt PDFs downloaded from the e-filing portal (several at once).
+1. `results = await readChallanPdfs(await Promise.all(fileList.map(async f => ({ name: f.name, data: new Uint8Array(await f.arrayBuffer()) }))), pdfjs)` - runs in the browser, nothing is sent anywhere. Show one line per file: green "read" with BSR / challan no / date / tax / interest / sections, or red with `problems`. Files that are not receipts (acknowledgements etc.) show "not a challan receipt" in grey.
+2. For a red file whose text was found but whose layout was not recognised, show **"Try with Gemini"**: first show `maskReceiptText(text)` (identifiers replaced by placeholders) in a box for the user to read, then on **"Send to Gemini"** post `geminiChallanRequest(masked)` to the server route and pass the reply text to `fromGemini(reply)`. Its result goes through the same cross-checks; if it fails, show the problems - the user types that challan in. Scanned (image-only) PDFs: no AI button; message as returned.
+3. **"Add N challans to the workbook"**: `bytes = addChallansToWorkbook(bytes, receipts)` (only green ones, duplicates removed), then continue to matching.
+
+**B. "Ask Gemini to propose" on the Points needing a decision panel** (only when `res.exceptions` has rows open).
+1. `payload = maskedPayload(challans, rows, res)`. Show it as a readable table ("This is all that will be sent: challan numbers, dates, amounts, major head, section breakup; rows as numbers with month, section, company/non-company and tax. No PAN, name, TAN, BSR or challan serial.") with **"Send to Gemini"**.
+2. Post `geminiExceptionRequest(payload)`; pass the reply to `checkProposals(reply, challans, rows, res)`. `geminiExceptionRequest` throws if anything that looks like a PAN/TAN slipped in - show that error and send nothing.
+3. Show each proposal as a card: rows, challan, Gemini's `explanation`, and the rule `checks`. Verdicts: **accepted** (green, pre-ticked), **needs-approval** (amber, NOT ticked - the user must tick it after reading the checks; e.g. a duplicate deposit used for a later month), **rejected** (red, cannot be ticked). Also list `unresolved`.
+4. **"Apply ticked proposals"**: `{result, links} = applyProposals(challans, rows, res, ticked)`; replace `res` with `result` and redraw all three panels (the rules re-check everything; anything they still flag stays visible as a point needing a decision, with the user's approval noted). The Apply challan links button then uses `links`.
+5. Never apply anything without the click; never send again automatically.
+
+### Phase 4 acceptance tests
+- `node test/phase4.test.ts` passes (made-up data, Gemini answers mocked).
+- A made-up receipt whose section amounts do not add up to the tax is refused, not guessed.
+- With two same-date challans and no major head, the rules leave the rows open; a mocked Gemini answer linking them sensibly is accepted, one naming a non-existent row is rejected, and one using a duplicate challan for a later month is "needs approval".
+- With "Never use AI" on, no request is ever made (check the browser's network tab).
 
 ## Text to show on every page (footer)
 
@@ -143,7 +167,7 @@ The same checks run from a terminal: `node test/phase1.test.ts`.
 
 ## Hosting on an existing site
 
-The app is entirely static once built (`npm run build` → `dist/`). Either deploy it from AI Studio to Cloud Run and link to it from the site, or set Vite's `base` (e.g. `/tds-tool/`) and copy `dist/` into the existing site under that path. No server code is needed either way.
+The app is entirely static once built (`npm run build` → `dist/`). Either deploy it from AI Studio to Cloud Run and link to it from the site, or set Vite's `base` (e.g. `/tds-tool/`) and copy `dist/` into the existing site under that path. Without the Phase 4 AI buttons no server code is needed. With them, add the one server route described under Privacy rules (key as a server secret, forwards the request, stores and logs nothing); if the site is static-only, deploy from AI Studio to Cloud Run, which provides that.
 
 
 ---
@@ -2588,5 +2612,354 @@ export function applyChallanMatches(data: ArrayBuffer | Uint8Array, matches: { r
   const c = hdr.indexOf('Challan #');
   for (const { row, challanNo } of matches) ws[XLSX.utils.encode_cell({ r: row - 1, c })] = { t: 'n', v: challanNo };
   return XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as Uint8Array;
+}
+```
+
+## src/core/challanPdf.ts
+
+```ts
+/**
+ * Phase 4a — read challan receipts (PDF) into the Challans sheet.
+ *
+ * The e-filing portal's "Challan Receipt" (ITNS 281) is a text PDF with fixed labels, including a
+ * section-wise table with the 4-digit codes. So it is read by RULES, in the browser - nothing is
+ * sent anywhere. Every read is cross-checked (section amounts = tax; tax breakup = receipt total);
+ * a receipt that fails is not used.
+ *
+ * Gemini is only a fallback for a receipt in another layout: maskReceiptText() removes the TAN, PAN,
+ * name, CIN and bank reference first, and geminiChallanRequest() builds the request. Scanned
+ * (image-only) PDFs cannot be masked, so they are refused - type those challans in.
+ *
+ * New module — does not change the frozen core.
+ */
+import * as XLSX from 'xlsx';
+import { BREAKUP_COLUMN, MAJOR_HEAD_COLUMN } from './challanMatch.ts';
+import type { Ymd } from './protean.ts';
+
+export interface ChallanReceipt {
+  bsr: string; serial: string; tenderDate: Ymd; depositDate: Ymd | null; cin: string;
+  majorHead: string; minorHead: string;
+  tax: number; surcharge: number; cess: number; interest: number; penalty: number; fee: number; others: number; total: number;
+  breakup: Record<string, number>;   // section code -> tax + surcharge + cess for that section
+  source: 'rules' | 'gemini';
+}
+export interface ReadResult { ok: boolean; receipt: ChallanReceipt | null; problems: string[] }
+
+// ---------------------------------------------------------------- text from the PDF (pdf.js)
+/** Minimal shape of pdf.js used here, so browser and Node builds both fit. */
+interface PdfJs { getDocument(src: { data: Uint8Array; useSystemFonts?: boolean; disableFontFace?: boolean }): { promise: Promise<{ numPages: number; getPage(n: number): Promise<{ getTextContent(): Promise<{ items: unknown[] }> }> }> } }
+
+/** Text of a PDF, rebuilt line by line (items grouped by their vertical position). */
+export async function pdfText(data: Uint8Array, pdfjs: PdfJs): Promise<string> {
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(data), useSystemFonts: true, disableFontFace: true }).promise;
+  const out: string[] = [];
+  for (let p = 1; p <= doc.numPages; p++) {
+    const page = await doc.getPage(p);
+    const items = (await page.getTextContent()).items as { str: string; transform: number[] }[];
+    const rows = new Map<number, { x: number; s: string }[]>();
+    for (const it of items) {
+      if (!('str' in it) || !it.str.trim()) continue;
+      const y = Math.round(it.transform[5]);
+      const key = [...rows.keys()].find(k => Math.abs(k - y) <= 2) ?? y;
+      rows.set(key, [...(rows.get(key) ?? []), { x: it.transform[4], s: it.str }]);
+    }
+    for (const y of [...rows.keys()].sort((a, b) => b - a)) out.push(rows.get(y)!.sort((a, b) => a.x - b.x).map(r => r.s).join(' '));
+  }
+  return out.join('\n');
+}
+
+// ---------------------------------------------------------------- the rules
+const money = (s: string | undefined) => (s === undefined ? NaN : Number(s.replace(/[₹,\s]/g, '')));
+const ymdFromDmy = (d: string) => { const [dd, mm, yy] = d.split(/[/-]/); return `${yy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`; };
+const MON: Record<string, string> = { JAN: '01', FEB: '02', MAR: '03', APR: '04', MAY: '05', JUN: '06', JUL: '07', AUG: '08', SEP: '09', OCT: '10', NOV: '11', DEC: '12' };
+
+export function parseChallanReceipt(text: string): ReadResult {
+  const t = text.replace(/ /g, ' ');
+  const one = (re: RegExp) => t.match(re)?.[1]?.trim();
+  const problems: string[] = [];
+  if (!/Challan Receipt/i.test(t) || !/BSR\s*code/i.test(t)) return { ok: false, receipt: null, problems: ['Not an e-filing portal challan receipt (layout not recognised)'] };
+
+  const bsr = one(/BSR\s*code\s*:\s*(\d{7})/i) ?? '';
+  const serial = one(/Challan\s*No\.?\s*:\s*(\d{1,5})/i) ?? '';
+  const tender = one(/Tender\s*Date\s*:\s*(\d{2}\/\d{2}\/\d{4})/i);
+  const dep = t.match(/Date\s*of\s*Deposit\s*:\s*(\d{2})-([A-Za-z]{3})-(\d{4})/i);
+  const majorHead = one(/Major\s*Head\s*:[^\n]*?\((00\d{2})\)/i) ?? '';
+  const minorHead = one(/Minor\s*Head\s*:[^\n]*?\((\d{3})\)/i) ?? '';
+  const cin = one(/CIN\s*:\s*([0-9A-Z]{14,20})/i) ?? '';
+  const brk = (label: string) => money(t.match(new RegExp(`\\b${label}\\s+₹\\s*([\\d,]+(?:\\.\\d+)?)`, 'i'))?.[1]);
+  const tax = brk('A\\s+Tax'), surcharge = brk('B\\s+Surcharge'), cess = brk('C\\s+Education\\s+Cess'), interest = brk('D\\s+Interest'),
+    penalty = brk('E\\s+Penalty'), fee = brk('F\\s+Fee[^₹\\n]*'), others = brk('G\\s+Others');
+  const total = money(t.match(/Total\s*\(A\+B\+C\+D\+E\+F\+G\)\s*₹\s*([\d,]+(?:\.\d+)?)/i)?.[1]);
+  const amount = money(t.match(/Amount\s*\(in\s*Rs\.?\)\s*:\s*₹\s*([\d,]+(?:\.\d+)?)/i)?.[1]);
+
+  // section-wise table: "<code> ₹ tax ₹ surcharge ₹ cess ₹ total" (code is 1001-1092)
+  const breakup: Record<string, number> = {};
+  for (const m of t.matchAll(/\b(10\d{2})\s+₹\s*([\d,]+)\s+₹\s*([\d,]+)\s+₹\s*([\d,]+)\s+₹\s*([\d,]+)/g))
+    breakup[m[1]] = (breakup[m[1]] ?? 0) + money(m[5]);
+
+  if (!/^\d{7}$/.test(bsr)) problems.push('BSR code not found');
+  if (!serial) problems.push('Challan number not found');
+  if (!tender) problems.push('Tender date not found');
+  if (!majorHead) problems.push('Major head code not found');
+  for (const [k, v] of Object.entries({ tax, interest, fee, others, total })) if (Number.isNaN(v)) problems.push(`${k} not found in the tax breakup`);
+  const bsum = Object.values(breakup).reduce((a, b) => a + b, 0);
+  const abc = tax + (surcharge || 0) + (cess || 0);
+  if (!Object.keys(breakup).length) problems.push('Section-wise table not found');
+  else if (Math.abs(bsum - abc) > 0.5) problems.push(`Section amounts add to ${bsum}, tax + surcharge + cess is ${abc} - the table was not read completely`);
+  if (!Number.isNaN(total) && Math.abs(abc + (interest || 0) + (penalty || 0) + (fee || 0) + (others || 0) - total) > 0.5) problems.push('Tax breakup does not add up to the total');
+  if (!Number.isNaN(amount) && !Number.isNaN(total) && Math.abs(amount - total) > 0.5) problems.push(`Amount ${amount} differs from the breakup total ${total}`);
+
+  if (problems.length) return { ok: false, receipt: null, problems };
+  return { ok: true, problems: [], receipt: {
+    bsr, serial: serial.padStart(5, '0'), tenderDate: ymdFromDmy(tender!), cin, majorHead, minorHead,
+    depositDate: dep ? `${dep[3]}-${MON[dep[2].toUpperCase()]}-${dep[1]}` : null,
+    tax: abc, surcharge: surcharge || 0, cess: cess || 0, interest: interest || 0, penalty: penalty || 0, fee: fee || 0, others: others || 0,
+    total, breakup, source: 'rules',
+  } };
+}
+
+/** Read several receipt PDFs; duplicates (same BSR + date + serial) are reported once. */
+export async function readChallanPdfs(files: { name: string; data: Uint8Array }[], pdfjs: PdfJs):
+  Promise<{ name: string; result: ReadResult; text: string }[]> {
+  const out: { name: string; result: ReadResult; text: string }[] = [];
+  for (const f of files) {
+    let text = '';
+    try { text = await pdfText(f.data, pdfjs); } catch (e) { out.push({ name: f.name, text: '', result: { ok: false, receipt: null, problems: [`Could not open the PDF: ${(e as Error).message}`] } }); continue; }
+    if (text.replace(/\s/g, '').length < 50) { out.push({ name: f.name, text, result: { ok: false, receipt: null, problems: ['No text in this PDF (scanned image?). It cannot be masked, so it is not sent to AI - type this challan in.'] } }); continue; }
+    out.push({ name: f.name, text, result: parseChallanReceipt(text) });
+  }
+  const seen = new Map<string, string>();
+  for (const o of out) {
+    const r = o.result.receipt; if (!r) continue;
+    const k = `${r.bsr}|${r.tenderDate}|${r.serial}`;
+    if (seen.has(k)) { o.result = { ok: false, receipt: null, problems: [`Same challan as ${seen.get(k)} - not added twice`] }; } else seen.set(k, o.name);
+  }
+  return out;
+}
+
+/** Put read receipts on the Challans sheet (numbered after any challans already there). */
+export function addChallansToWorkbook(data: ArrayBuffer | Uint8Array, receipts: ChallanReceipt[]): Uint8Array {
+  const wb = XLSX.read(data, { type: 'array', cellDates: false });
+  const ws = wb.Sheets['Challans'];
+  const grid = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, raw: true, defval: null });
+  const hdr = (grid[0] ?? []).map(v => String(v ?? '')) as string[];
+  for (const h of [MAJOR_HEAD_COLUMN, BREAKUP_COLUMN]) if (!hdr.includes(h)) hdr.push(h);
+  const body = grid.slice(1).filter(r => r.some(v => v !== null && v !== ''));
+  let next = Math.max(0, ...body.map(r => Number(r[hdr.indexOf('Challan #')]) || 0)) + 1;
+  for (const r of [...receipts].sort((a, b) => a.tenderDate.localeCompare(b.tenderDate))) {
+    const row: unknown[] = new Array(hdr.length).fill(null);
+    const set = (h: string, v: unknown) => { row[hdr.indexOf(h)] = v; };
+    const [y, m, d] = r.tenderDate.split('-');
+    set('Challan #', next++); set('BSR code', r.bsr); set('Challan serial no.', r.serial); set('Date deposited', `${d}/${m}/${y}`);
+    set('Tax', r.tax); set('Interest', r.interest); set('Fee', r.fee); set('Others', r.others + r.penalty); set('Minor head', r.minorHead || '200');
+    set(MAJOR_HEAD_COLUMN, r.majorHead);
+    set(BREAKUP_COLUMN, Object.entries(r.breakup).map(([c, v]) => `${c}=${v}`).join('; '));
+    body.push(row);
+  }
+  wb.Sheets['Challans'] = XLSX.utils.aoa_to_sheet([hdr, ...body]);
+  return XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as Uint8Array;
+}
+
+// ---------------------------------------------------------------- Gemini fallback (masked)
+/** Remove what identifies the deductor or a person before any text leaves the browser. */
+export function maskReceiptText(text: string): string {
+  return text
+    .replace(/\b[A-Z]{4}\d{5}[A-Z]\b/g, '[TAN]')
+    .replace(/\b[A-Z]{5}\d{4}[A-Z]\b/g, '[PAN]')
+    .replace(/^(\s*(Name|Deductor|Collector|Taxpayer|Assessee)[^:\n]*:).*$/gim, '$1 [NAME]')
+    .replace(/^(\s*CIN\s*:).*$/gim, '$1 [CIN]')
+    .replace(/^(\s*Bank\s*Reference[^:\n]*:).*$/gim, '$1 [REF]')
+    .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '[EMAIL]')
+    .replace(/\b\d{10}\b/g, '[NUMBER]');
+}
+
+/** Request for Gemini (responseMimeType 'application/json' + this schema). The text must already be masked. */
+export function geminiChallanRequest(maskedText: string) {
+  if (/\b[A-Z]{5}\d{4}[A-Z]\b|\b[A-Z]{4}\d{5}[A-Z]\b/.test(maskedText)) throw new Error('Text is not masked - refusing to build the request');
+  return {
+    systemInstruction: 'You read Indian income-tax challan receipts (TDS/TCS, ITNS 281). Return ONLY the JSON asked for. Never guess: use null for anything not printed in the text. Amounts in rupees as numbers. Dates as DD/MM/YYYY exactly as printed.',
+    prompt: `Extract the challan details from this receipt text (identifiers have been replaced by placeholders):\n\n${maskedText}`,
+    responseSchema: {
+      type: 'OBJECT',
+      properties: {
+        bsr: { type: 'STRING', nullable: true }, challanNo: { type: 'STRING', nullable: true }, tenderDate: { type: 'STRING', nullable: true },
+        majorHead: { type: 'STRING', nullable: true, description: '4 digits, e.g. 0020 or 0021' }, minorHead: { type: 'STRING', nullable: true },
+        tax: { type: 'NUMBER', nullable: true }, surcharge: { type: 'NUMBER', nullable: true }, cess: { type: 'NUMBER', nullable: true },
+        interest: { type: 'NUMBER', nullable: true }, penalty: { type: 'NUMBER', nullable: true }, fee: { type: 'NUMBER', nullable: true },
+        others: { type: 'NUMBER', nullable: true }, total: { type: 'NUMBER', nullable: true },
+        sections: { type: 'ARRAY', items: { type: 'OBJECT', properties: { code: { type: 'STRING' }, amount: { type: 'NUMBER' } }, required: ['code', 'amount'] } },
+      },
+      required: ['bsr', 'challanNo', 'tenderDate', 'tax', 'total', 'sections'],
+    },
+  };
+}
+
+/** Check Gemini's answer with the same cross-checks as the rules; only a clean answer is usable. */
+export function fromGemini(json: string): ReadResult {
+  let o: Record<string, unknown>;
+  try { o = JSON.parse(json); } catch { return { ok: false, receipt: null, problems: ['AI answer was not valid JSON'] }; }
+  const n = (k: string) => (typeof o[k] === 'number' ? (o[k] as number) : 0);
+  const sections = Array.isArray(o.sections) ? (o.sections as { code: string; amount: number }[]) : [];
+  const fake = [
+    'Challan Receipt', `BSR code : ${o.bsr ?? ''}`, `Challan No : ${o.challanNo ?? ''}`, `Tender Date : ${o.tenderDate ?? ''}`,
+    `Major Head : x (${o.majorHead ?? ''})`, `Minor Head : x (${o.minorHead ?? '200'})`,
+    ...sections.map(s => `${s.code} ₹ ${s.amount} ₹ 0 ₹ 0 ₹ ${s.amount}`),
+    `A Tax ₹ ${n('tax')}`, `B Surcharge ₹ ${n('surcharge')}`, `C Education Cess ₹ ${n('cess')}`, `D Interest ₹ ${n('interest')}`,
+    `E Penalty ₹ ${n('penalty')}`, `F Fee ₹ ${n('fee')}`, `G Others ₹ ${n('others')}`, `Total (A+B+C+D+E+F+G) ₹ ${n('total')}`,
+  ].join('\n');
+  const r = parseChallanReceipt(fake);
+  if (r.receipt) r.receipt.source = 'gemini';
+  return r;
+}
+```
+
+## src/core/aiExceptions.ts
+
+```ts
+/**
+ * Phase 4b — AI proposals for the challan exceptions the rules left open.
+ *
+ * Only what the rules could not decide goes to Gemini, and only MASKED:
+ *   challans: number, date, tax, interest, major head, section breakup, balance left
+ *   rows:     an id, month of deduction, section code, payee type (company / non-company), tax
+ * No PAN, name, TAN, BSR code, challan serial or CIN is ever in the payload.
+ *
+ * Gemini only PROPOSES links. Every proposal is checked here by rules (row exists and is open,
+ * challan exists, enough money left, section share, dates). A proposal that breaks a rule the
+ * law or the SOP sets - e.g. a challan dated before the deduction, or using a duplicate challan to
+ * fund a later month - is not dropped silently: it is marked as needing the user's approval.
+ * Accepted links are applied as typed-in challan numbers and matchChallans() is run again,
+ * so the final answer is always the rules' answer.
+ *
+ * New module — does not change the frozen core.
+ */
+import { matchChallans, type ChallanIn, type MatchResult, type RowIn } from './challanMatch.ts';
+
+const payeeType = (pan: string) => (/^[A-Z]{3}C/.test(pan) ? 'company' : 'non-company');
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+export interface MaskedPayload {
+  challans: { challan: number; date: string; tax: number; interest: number; majorHead: string; breakup: Record<string, number> | null; balance: number }[];
+  rows: { id: number; month: string; section: string; payee: 'company' | 'non-company'; tax: number; challan: number | null; status: string }[];
+  exceptions: { kind: string; rows: number[]; challans: number[]; message: string }[];
+}
+
+/** Masked payload: only exception rows are open; matched rows are shown for context with their challan. */
+export function maskedPayload(challans: ChallanIn[], rows: RowIn[], result: MatchResult): MaskedPayload {
+  const st = new Map(result.rows.map(r => [r.row, r]));
+  const bal = new Map(result.challans.map(c => [c.no, c.balance]));
+  const strip = (s: string) => s.replace(/\b[A-Z]{5}\d{4}[A-Z]\b/g, '[PAN]').replace(/\b[A-Z]{4}\d{5}[A-Z]\b/g, '[TAN]').replace(/\b\d{7}\b/g, '[BSR]');
+  return {
+    challans: challans.map(c => ({ challan: c.no, date: c.date, tax: c.tax, interest: c.interest, majorHead: c.majorHead, breakup: c.breakup, balance: bal.get(c.no) ?? c.tax })),
+    rows: rows.map(r => ({ id: r.row, month: r.dateDeducted.slice(0, 7), section: r.code, payee: payeeType(r.pan), tax: r.tax,
+      challan: st.get(r.row)?.status === 'exception' ? null : (st.get(r.row)?.challanNo ?? null), status: st.get(r.row)?.status ?? 'open' })),
+    exceptions: result.exceptions.map(e => ({ kind: e.kind, rows: e.rows, challans: e.challans, message: strip(e.message) })),
+  };
+}
+
+/** Throws if anything that looks like an identifier is in the payload (last line of defence). */
+export function assertMasked(payload: unknown): void {
+  const s = JSON.stringify(payload);
+  if (/\b[A-Z]{5}\d{4}[A-Z]\b/.test(s)) throw new Error('PAN found in the AI payload - not sent');
+  if (/\b[A-Z]{4}\d{5}[A-Z]\b/.test(s)) throw new Error('TAN found in the AI payload - not sent');
+  if (/"(pan|name|bsr|serial|cin|tan)"/i.test(s)) throw new Error('Identifier field found in the AI payload - not sent');
+}
+
+/** Gemini request (responseMimeType 'application/json' + responseSchema). Show `payload` to the user before sending. */
+export function geminiExceptionRequest(payload: MaskedPayload) {
+  assertMasked(payload);
+  return {
+    systemInstruction: [
+      'You help an Indian chartered accountant link TDS/TCS deduction rows to the challans (bank deposits) that paid them, for a quarterly e-TDS/TCS statement.',
+      'Rules: a challan can only pay tax deducted on or before its date. A challan cannot be used beyond its balance; if it has a section breakup, rows of a section use only that section\'s amount.',
+      'Company payees are normally paid under major head 0020, others under 0021; report what was actually deposited (note any mismatch).',
+      'Only propose links for rows whose challan is null. Never invent challans. If nothing fits, say so instead of forcing a link.',
+      'If a proposal needs a rule to be bent (for example using an excess or duplicate challan to cover a later month), set needsApproval true and explain in plain words.',
+      'Return ONLY the JSON asked for.',
+    ].join(' '),
+    prompt: `Propose challans for the open rows. Data (identifiers removed):\n${JSON.stringify(payload)}`,
+    responseSchema: {
+      type: 'OBJECT',
+      properties: {
+        proposals: { type: 'ARRAY', items: { type: 'OBJECT', properties: {
+          rows: { type: 'ARRAY', items: { type: 'INTEGER' } }, challan: { type: 'INTEGER' },
+          needsApproval: { type: 'BOOLEAN' }, explanation: { type: 'STRING' } }, required: ['rows', 'challan', 'explanation'] } },
+        unresolved: { type: 'ARRAY', items: { type: 'OBJECT', properties: { rows: { type: 'ARRAY', items: { type: 'INTEGER' } }, explanation: { type: 'STRING' } }, required: ['rows', 'explanation'] } },
+      },
+      required: ['proposals'],
+    },
+  };
+}
+
+export interface CheckedProposal {
+  rows: number[]; challan: number; explanation: string;
+  verdict: 'accepted' | 'needs-approval' | 'rejected';
+  checks: string[];                                    // what the rules found
+}
+
+/** Check Gemini's proposals against the rules. Nothing is applied here. */
+export function checkProposals(json: string, challans: ChallanIn[], rows: RowIn[], result: MatchResult): { proposals: CheckedProposal[]; unresolved: { rows: number[]; explanation: string }[]; problems: string[] } {
+  let o: { proposals?: unknown; unresolved?: unknown };
+  try { o = JSON.parse(json); } catch { return { proposals: [], unresolved: [], problems: ['AI answer was not valid JSON'] }; }
+  const list = Array.isArray(o.proposals) ? (o.proposals as { rows: number[]; challan: number; explanation?: string; needsApproval?: boolean }[]) : [];
+  const byRow = new Map(rows.map(r => [r.row, r]));
+  const byCh = new Map(challans.map(c => [c.no, c]));
+  const status = new Map(result.rows.map(r => [r.row, r]));
+  const dupChallans = new Set(result.exceptions.filter(e => e.kind === 'duplicate').flatMap(e => e.challans));
+  // money still free per challan and per challan+section (after rows already matched or given)
+  const free = new Map(result.challans.map(c => [c.no, c.balance]));
+  const freeSec = new Map<string, number>();
+  for (const c of challans) if (c.breakup) for (const [k, v] of Object.entries(c.breakup)) freeSec.set(`${c.no}|${k}`, v);
+  for (const r of result.rows) if (r.challanNo && r.status !== 'exception') {
+    const k = `${r.challanNo}|${byRow.get(r.row)?.code}`; if (freeSec.has(k)) freeSec.set(k, freeSec.get(k)! - (byRow.get(r.row)?.tax ?? 0));
+  }
+  const taken = new Set<number>();
+  const out: CheckedProposal[] = [];
+  for (const p of list) {
+    const checks: string[] = []; let reject = false; let approve = !!p.needsApproval;
+    const ids = Array.isArray(p.rows) ? p.rows : [];
+    const c = byCh.get(p.challan);
+    if (!c) { checks.push(`Challan ${p.challan} does not exist`); reject = true; }
+    for (const id of ids) {
+      if (!byRow.has(id)) { checks.push(`Row ${id} does not exist`); reject = true; continue; }
+      if (status.get(id)?.status !== 'exception') { checks.push(`Row ${id} is already settled by the rules - left as it is`); reject = true; }
+      if (taken.has(id)) { checks.push(`Row ${id} is in two proposals`); reject = true; }
+    }
+    if (!ids.length) { checks.push('No rows given'); reject = true; }
+    if (!reject && c) {
+      const rs = ids.map(id => byRow.get(id)!);
+      const total = r2(rs.reduce((a, r) => a + r.tax, 0));
+      const late = rs.filter(r => r.dateDeducted > c.date);
+      if (late.length) { checks.push(`Challan dated ${c.date} is before the deduction of row(s) ${late.map(r => r.row).join(', ')} - a challan cannot pay tax deducted after it`); approve = true; }
+      if (total > (free.get(c.no) ?? 0) + 0.5) { checks.push(`Rows total Rs ${total} but only Rs ${r2(free.get(c.no) ?? 0)} of challan ${c.no} is free`); reject = true; }
+      if (c.breakup) for (const code of new Set(rs.map(r => r.code))) {
+        const need = r2(rs.filter(r => r.code === code).reduce((a, r) => a + r.tax, 0));
+        const have = freeSec.get(`${c.no}|${code}`);
+        if (have === undefined) { checks.push(`Challan ${c.no} has no amount for section ${code}`); approve = true; }
+        else if (need > have + 0.5) { checks.push(`Section ${code}: rows need Rs ${need}, challan ${c.no} has Rs ${r2(have)} left for it`); approve = true; }
+      }
+      const wrongHead = c.majorHead ? rs.filter(r => (payeeType(r.pan) === 'company' ? '0020' : '0021') !== c.majorHead) : [];
+      if (wrongHead.length) checks.push(`Major head ${c.majorHead} differs from the payee type for row(s) ${wrongHead.map(r => r.row).join(', ')} - report as deposited (SOP rule 11) and note it`);
+      if (dupChallans.has(c.no)) { checks.push(`Challan ${c.no} was flagged as a possible duplicate deposit - using it needs your decision`); approve = true; }
+      if (!checks.length) checks.push('Fits: dates, balance and section share all check out');
+      if (!reject) { free.set(c.no, (free.get(c.no) ?? 0) - total); for (const r of rs) { const k = `${c.no}|${r.code}`; if (freeSec.has(k)) freeSec.set(k, freeSec.get(k)! - r.tax); } ids.forEach(id => taken.add(id)); }
+    }
+    out.push({ rows: ids, challan: p.challan, explanation: String(p.explanation ?? ''), verdict: reject ? 'rejected' : approve ? 'needs-approval' : 'accepted', checks });
+  }
+  const unresolved = Array.isArray(o.unresolved) ? (o.unresolved as { rows: number[]; explanation: string }[]) : [];
+  return { proposals: out, unresolved, problems: [] };
+}
+
+/**
+ * Apply the proposals the user accepted (verdict 'accepted', plus any 'needs-approval' they approved)
+ * as typed-in challan numbers, then run the rules again. Returns the new result and the links to write
+ * with applyChallanMatches().
+ */
+export function applyProposals(challans: ChallanIn[], rows: RowIn[], result: MatchResult, approved: CheckedProposal[]) {
+  const link = new Map<number, number>();
+  for (const r of result.rows) if (r.challanNo && r.status !== 'exception') link.set(r.row, r.challanNo);
+  for (const p of approved) if (p.verdict !== 'rejected') for (const id of p.rows) link.set(id, p.challan);
+  const again = matchChallans(challans, rows.map(r => ({ ...r, challanNo: link.get(r.row) ?? null })));
+  return { result: again, links: again.rows.filter(r => r.challanNo).map(r => ({ row: r.row, challanNo: r.challanNo! })) };
 }
 ```
