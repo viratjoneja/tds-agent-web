@@ -14,3 +14,5 @@ dist/
 !test/fixtures/*.csi
 !test/fixtures/*.err
 !test/fixtures/*.html
+!index.html
+.claude/

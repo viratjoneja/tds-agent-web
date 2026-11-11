@@ -1,3 +1,5 @@
+> **Superseded (v2.0.0):** import the repository into AI Studio with *Import from GitHub* instead of pasting this brief. See README.md.
+
 # Build brief: TDS / TCS Return File Builder (for Google AI Studio "Build")
 
 ## What to build

@@ -1,6 +1,24 @@
 # TDS Agent — Web
 
-Browser version of the TDS/TCS return tool: turns a filled input workbook into a Protean (NSDL) return text file for Forms 138, 140 and 143, with checks and a review before the user validates with Protean's FVU on their own PC. Built into a web app with Google AI Studio "Build" (`AISTUDIO_PASTE.md`).
+Web app that turns a filled input workbook into a Protean (NSDL) e-TDS/TCS return text file for Forms 138, 140 and 143: section codes worked out from the working, challans matched and split automatically, a review before the FVU, and FVU results explained row by row. Everything runs in the browser; client files are never uploaded.
+
+**Engine fingerprint for this release: `ecea70457ab6`** — the app's footer must show the same value and "self-test passed". If it does not, the deployment is not running the tested engine.
+
+## Deploy with Google AI Studio (Build)
+
+1. In AI Studio → Build, click **+** in the prompt box → **Import from GitHub**, connect your GitHub account and choose `viratjoneja/tds-agent-web`.
+2. Deploy (Cloud Run) as usual. For the optional AI buttons, set the secret **`GEMINI_API_KEY`** (a billing-enabled key, so Google does not use the data for training). Optional `GEMINI_MODEL` (default `gemini-flash-latest`).
+3. Open the app and check the footer: engine `ecea70457ab6`, **self-test passed**. Quick test: a workbook whose Tax column is `=Amount*Rate` (no /100) must stop at step 4 with "Tax looks like Amount x Rate % without dividing by 100".
+4. Use AI Studio only for look and feel. Do not let it change the engine files (listed in `engine-files.mjs`); see `AGENTS.md`. After each new release here, pull the latest from GitHub in AI Studio's GitHub settings.
+
+## Run it anywhere else (Cloud Run, a VM, your PC)
+
+```
+npm install
+npm run build
+GEMINI_API_KEY=... npm start        # http://localhost:8080 ; without the key the AI buttons are simply off
+```
+`server.mjs` (no dependencies) serves the app and the one AI route `/api/gemini`, which holds the key, refuses anything that looks like a PAN/TAN, and stores nothing. Development: `npm run dev`.
 
 **Private repository.** Separate from `tds-agent` (the Claude Code agent used for filed returns) on purpose: nothing here may change that agent, and nothing here depends on it.
 
@@ -14,16 +32,16 @@ Browser version of the TDS/TCS return tool: turns a filled input workbook into a
 ## Layout
 
 ```
-src/                  frozen core (see rule 1) + new feature modules
-test/parity.test.ts   core parity test
-test/fixtures/        frozen golden files (made-up data)
-AISTUDIO_BRIEF.md     build brief for Google AI Studio
-AISTUDIO_PASTE.md     brief + code in one file (regenerate: py -3 make_paste.py)
+src/*.ts, *.json      the engine: frozen core (rule 1) + feature modules - listed in engine-files.mjs
+src/app/              the screens (React) - safe to restyle
+server.mjs            serves the app + /api/gemini (key stays on the server)
+test/                 parity + phase tests; fixtures are made-up, frozen golden files
+AISTUDIO_*.md         old paste-in brief (superseded by Import from GitHub; kept for reference)
 ```
 
-## Setup
+## Tests
 
-Node 22.6 or later. `npm install`, then `node test/parity.test.ts`.
+Node 22.6 or later: `npm install`, `npm test` (engine), `npm run typecheck`, `npm run engine-hash` (prints the fingerprint above).
 
 ## Plan
 
@@ -35,4 +53,5 @@ Node 22.6 or later. `npm install`, then `node test/parity.test.ts`.
 | 3 | Rows matched to challans by rules; challan matching review page | done (1.3.0) |
 | 4 | Challan receipt PDFs read by rules in the browser (Gemini fallback, masked); Gemini proposals for open challan points, masked, checked by rules, applied only on approval | done (1.4.0) |
 | 4.5 | Automatic challan split: month plan (interest shows the month paid late), same-date 0020/0021 pairs, overflow to top-up challans, salary share kept; Tax column check (missing /100) | done (1.5.0) |
+| 6 | Full app in the repo (screens, Gemini route, self-test, engine fingerprint) for Import from GitHub | done (2.0.0) |
 | 5 | Tests on every rule; local checks on real Q2 cases | ongoing |
