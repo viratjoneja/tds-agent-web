@@ -54,4 +54,5 @@ Node 22.6 or later: `npm install`, `npm test` (engine), `npm run typecheck`, `np
 | 4 | Challan receipt PDFs read by rules in the browser (Gemini fallback, masked); Gemini proposals for open challan points, masked, checked by rules, applied only on approval | done (1.4.0) |
 | 4.5 | Automatic challan split: month plan (interest shows the month paid late), same-date 0020/0021 pairs, overflow to top-up challans, salary share kept; Tax column check (missing /100) | done (1.5.0) |
 | 6 | Full app in the repo (screens, Gemini route, self-test, engine fingerprint) for Import from GitHub | done (2.0.0) |
+| 6.1 | Rate % cells formatted as Excel percentages (0.02 shown as 2%) read as 2 on upload | done (2.0.1) |
 | 5 | Tests on every rule; local checks on real Q2 cases | ongoing |

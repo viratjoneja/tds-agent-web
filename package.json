@@ -1,6 +1,6 @@
 {
   "name": "tds-agent-web",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "description": "Browser version of the TDS agent. Frozen core from tds-agent 2.6.0 (Protean FVU 1.2 layout) plus web-only features.",
   "type": "module",
@@ -11,7 +11,7 @@
     "gcp-build": "vite build",
     "typecheck": "tsc -p tsconfig.json",
     "engine-hash": "node engine-files.mjs",
-    "test": "node test/parity.test.ts && node test/phase1.test.ts && node test/phase2.test.ts && node test/phase3.test.ts && node test/phase4.test.ts && node test/phase5.test.ts"
+    "test": "node test/parity.test.ts && node test/phase1.test.ts && node test/phase2.test.ts && node test/phase3.test.ts && node test/phase4.test.ts && node test/phase5.test.ts && node test/phase6.test.ts"
   },
   "dependencies": {
     "pdfjs-dist": "4.10.38",
