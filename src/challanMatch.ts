@@ -10,9 +10,16 @@
  *    share is used; without one, the whole challan tax is available. What this form does not use
  *    stays as balance for other forms (shared challans - e.g. TCS paid with TDS).
  *  - Within Rs 1 counts as rounding.
+ * Month plan (v1.5, first): each challan is tied to the month it pays - a challan with no interest
+ *  to the earliest month it is on time for; a challan with interest to the month it is late for
+ *  (unique, and the interest must fit 1.5% a month on at most the challan amount). Same-date pairs
+ *  with no major head: the smaller is taken as 0020 when the month has company and other payees.
+ *  A month's rows (per major head) go to its challan; rows that do not fit are split off to other
+ *  challans with money left (top-up challans first). Section breakups only reserve the share of
+ *  sections this return does not have (e.g. 1002 salary); otherwise a difference is a note.
  * Never decided here (returned as exceptions for a person, or for the Phase 4 AI to propose):
- *  rows larger than any challan, rows needing more than one challan, a challan dated before the
- *  month of deduction, possible duplicate challans, a typed-in challan that does not fit.
+ *  rows larger than any challan, a challan dated before the month of deduction, possible duplicate
+ *  challans, a typed-in challan that does not fit.
  *
  * New module — does not change the frozen core.
  */
@@ -80,8 +87,17 @@ export function matchChallans(challans: ChallanIn[], rows: RowIn[]): MatchResult
   const used = new Map<string, number>();                       // `${challan}|${code or *}` -> amount used
   const capKey = (c: ChallanIn, code: string) => `${c.no}|${c.breakup ? code : '*'}`;
   const capacity = (c: ChallanIn, code: string) =>
-    (c.breakup ? (c.breakup[code] ?? 0) : c.tax) - (used.get(capKey(c, code)) ?? 0);
-  const use = (c: ChallanIn, code: string, amt: number) => used.set(capKey(c, code), (used.get(capKey(c, code)) ?? 0) + amt);
+    Math.min((c.breakup ? (c.breakup[code] ?? 0) : c.tax) - (used.get(capKey(c, code)) ?? 0), free(c));
+  const usedTotal = new Map<number, number>();
+  const use = (c: ChallanIn, code: string, amt: number) => {
+    used.set(capKey(c, code), (used.get(capKey(c, code)) ?? 0) + amt);
+    usedTotal.set(c.no, (usedTotal.get(c.no) ?? 0) + amt);
+  };
+  // money of a challan this return may use: its tax less the breakup share of sections this return has no rows for
+  const codesHere = new Set(rows.map(r => r.code));
+  const reserved = (c: ChallanIn) => (c.breakup ? Object.entries(c.breakup).filter(([k]) => !codesHere.has(k)).reduce((a, [, v]) => a + v, 0) : 0);
+  const free = (c: ChallanIn) => r2(c.tax - reserved(c) - (usedTotal.get(c.no) ?? 0));
+  const reserveUsed = new Set<number>();
   const byNo = new Map(challans.map(c => [c.no, c]));
   const out: RowMatch[] = [];
   const exceptions: MatchException[] = [];
@@ -115,6 +131,82 @@ export function matchChallans(challans: ChallanIn[], rows: RowIn[]): MatchResult
     }
   }
 
+  const describe = (month: string, mh: string, code: string, grp: RowIn[], total: number) =>
+    `${grp.length} row(s) deducted in ${month}${mh ? `, payee major head ${mh}` : ''}${code !== '*' ? `, section ${code}` : ''} (Rs ${inr(total)})`;
+  const headNote = (c: ChallanIn, mh: string) => (c.majorHead && mh && c.majorHead !== mh
+    ? `; challan is major head ${c.majorHead} although the payee needs ${mh} - reported as deposited (SOP rule 11), check` : '');
+  const lateNote = (c: ChallanIn, month: string) => (c.date > dueDate(`${month}-01`) ? `; paid after the due date ${dueDate(`${month}-01`)}` : '');
+
+  // 1b. MONTH PLAN (v1.5): tie challans to the month they pay, then fill and split.
+  const monthsWithRows = [...new Set(rows.map(r => monthKey(r.dateDeducted)))].sort();
+  const tagOf = new Map<number, string>();           // challan -> month it pays
+  for (const c of challans) {
+    const possible = monthsWithRows.filter(m => c.date >= `${m}-01`);
+    if (c.interest > 0) {
+      const late = possible.filter(m => c.date > dueDate(`${m}-01`) && c.interest / (0.015 * lateMonths(`${m}-01`, c.date)) <= c.tax * 1.02 + 1);
+      if (late.length === 1) tagOf.set(c.no, late[0]);
+    } else {
+      const onTime = possible.filter(m => c.date <= dueDate(`${m}-01`));
+      if (onTime.length) tagOf.set(c.no, onTime[0]);
+    }
+  }
+  // same-date pairs without a major head: the smaller one is the company (0020) challan
+  const headOf = new Map<number, string>(challans.map(c => [c.no, c.majorHead]));
+  const headNoteOf = new Map<number, string>();
+  for (const date of new Set(challans.map(c => c.date))) {
+    const pair = challans.filter(c => c.date === date);
+    const m = tagOf.get(pair[0]?.no);
+    if (pair.length !== 2 || pair.some(c => c.majorHead) || !m || tagOf.get(pair[1].no) !== m || pair[0].tax === pair[1].tax) continue;
+    const mr = rows.filter(r => monthKey(r.dateDeducted) === m);
+    if (!mr.some(r => majorHeadFor(r.pan) === '0020') || !mr.some(r => majorHeadFor(r.pan) === '0021')) continue;
+    const [small, big] = [...pair].sort((a, b) => a.tax - b.tax);
+    headOf.set(small.no, '0020'); headOf.set(big.no, '0021');
+    for (const c of pair) headNoteOf.set(c.no, `; major head not given - #${small.no} (the smaller of the two challans of ${date}) taken as 0020 and #${big.no} as 0021, check with the challan receipts`);
+  }
+  const planned = (r: RowIn) => {
+    const m = monthKey(r.dateDeducted), mh = majorHeadFor(r.pan);
+    const mine = challans.filter(c => tagOf.get(c.no) === m && c.date >= r.dateDeducted);
+    const sameHead = mine.filter(c => headOf.get(c.no) === mh);
+    if (sameHead.length === 1) return sameHead[0];
+    if (!sameHead.length && mine.length === 1 && !headOf.get(mine[0].no)) return mine[0];
+    return undefined;
+  };
+  {
+    const g = new Map<number, RowIn[]>();
+    for (const r of rows.filter(r => r.challanNo === null)) { const c = planned(r); if (c) g.set(c.no, [...(g.get(c.no) ?? []), r]); }
+    const overflow: { r: RowIn; home: ChallanIn }[] = [];
+    for (const [no, grp] of [...g.entries()].sort(([a], [b]) => a - b)) {
+      const c = byNo.get(no)!;
+      const total = r2(grp.reduce((a, r) => a + r.tax, 0));
+      const fits = total <= free(c) + 1;
+      // if not all fit, keep the most rows by value: largest first while they fit, the rest overflow
+      const take = fits ? grp : [];
+      if (!fits) { let left = free(c); for (const r of [...grp].sort((a, b) => b.tax - a.tax)) if (r.tax <= left + 1) { take.push(r); left = r2(left - r.tax); } }
+      const m = monthKey(grp[0].dateDeducted);
+      for (const r of take) {
+        use(c, r.code, r.tax);
+        out.push({ row: r.row, challanNo: c.no, status: 'matched',
+          reason: `deducted in ${m} -> challan #${c.no} of ${c.date}, the challan for ${m}${c.interest > 0 ? ' (paid late, with interest)' : ''}${headOf.get(c.no) ? `, major head ${headOf.get(c.no)}` : ''}${headNoteOf.get(c.no) ?? ''}${headNote({ ...c, majorHead: headOf.get(c.no) ?? '' }, majorHeadFor(r.pan))}${lateNote(c, m)}` });
+      }
+      for (const r of grp) if (!take.includes(r)) overflow.push({ r, home: c });
+    }
+    // split: overflow rows to other challans with money left - same major head, dated after the deduction;
+    // challans not tied to a month (top-ups) first, then by date
+    for (const { r, home } of overflow.sort((a, b) => b.r.tax - a.r.tax)) {
+      const mh = majorHeadFor(r.pan);
+      // same major head first (top-ups, then by date); the other head only as a last resort (SOP rule 11, noted)
+      const sameHead = (c: ChallanIn) => !headOf.get(c.no) || !mh || headOf.get(c.no) === mh;
+      const cands = challans.filter(c => c.no !== home.no && c.date >= r.dateDeducted && free(c) + 1 >= r.tax)
+        .sort((a, b) => (sameHead(a) ? 0 : 1) - (sameHead(b) ? 0 : 1) || (tagOf.has(a.no) ? 1 : 0) - (tagOf.has(b.no) ? 1 : 0) || a.date.localeCompare(b.date));
+      const c = cands[0];
+      if (!c) continue;                                  // left for the passes / exceptions below
+      use(c, r.code, r.tax);
+      const m = monthKey(r.dateDeducted);
+      out.push({ row: r.row, challanNo: c.no, status: 'matched',
+        reason: `deducted in ${m}; the challan for ${m} (#${home.no}) has no room left, so split off to challan #${c.no} of ${c.date} (Rs ${inr(free(c))} left there)${headNote({ ...c, majorHead: headOf.get(c.no) ?? '' }, mh)}${lateNote(c, m)}` });
+    }
+  }
+
   // 2. the rest. Passes, most certain first:
   //    a. with a section breakup on the challans: by month + section, using that section's share
   //    b. without: a challan whose amount EXACTLY equals a section's rows for the month
@@ -139,11 +231,6 @@ export function matchChallans(challans: ChallanIn[], rows: RowIn[]): MatchResult
       .filter(c => code === '*' || !c.breakup || (c.breakup[code] ?? 0) > 0)
       .sort((a, b) => (a.date <= due) === (b.date <= due) ? a.date.localeCompare(b.date) : (a.date <= due ? -1 : 1));
   };
-  const describe = (month: string, mh: string, code: string, grp: RowIn[], total: number) =>
-    `${grp.length} row(s) deducted in ${month}${mh ? `, payee major head ${mh}` : ''}${code !== '*' ? `, section ${code}` : ''} (Rs ${inr(total)})`;
-  const headNote = (c: ChallanIn, mh: string) => (c.majorHead && mh && c.majorHead !== mh
-    ? `; challan is major head ${c.majorHead} although the payee needs ${mh} - reported as deposited (SOP rule 11), check` : '');
-  const lateNote = (c: ChallanIn, month: string) => (c.date > dueDate(`${month}-01`) ? `; paid after the due date ${dueDate(`${month}-01`)}` : '');
 
   // A pass groups the pending rows (by month, optionally section, optionally payee major head) and
   // either looks for an EXACT amount (challan, or its section share) or the EARLIEST challan that
@@ -198,6 +285,21 @@ export function matchChallans(challans: ChallanIn[], rows: RowIn[]): MatchResult
   runPass(true, true, 'fit');         // earliest challan (section share) that can take a section's rows
   runPass(false, true, 'fit');        // earliest challan that can take the month's rows
 
+  // last resort: a challan's share reserved for sections this return does not have (e.g. 1002 salary)
+  // is used only when nothing else is left - with a note to check the other return still has enough
+  for (const r of pending().sort((a, b) => b.tax - a.tax)) {
+    const mh = majorHeadFor(r.pan), m = monthKey(r.dateDeducted);
+    const sameHead = (c: ChallanIn) => !headOf.get(c.no) || !mh || headOf.get(c.no) === mh;
+    const c = challans.filter(c => reserved(c) > 0 && c.date >= r.dateDeducted && c.tax - (usedTotal.get(c.no) ?? 0) + 1 >= r.tax)
+      .sort((a, b) => (sameHead(a) ? 0 : 1) - (sameHead(b) ? 0 : 1) || (tagOf.get(a.no) === m ? 0 : 1) - (tagOf.get(b.no) === m ? 0 : 1) || a.date.localeCompare(b.date))[0];
+    if (!c) continue;
+    use(c, r.code, r.tax);
+    const other = Object.keys(c.breakup!).filter(k => !codesHere.has(k)).join(', ');
+    out.push({ row: r.row, challanNo: c.no, status: 'matched',
+      reason: `deducted in ${m}; no challan has room left for this return's sections, so it uses part of challan #${c.no}'s share for section ${other} (another return) - check that return still has enough${headNote({ ...c, majorHead: headOf.get(c.no) ?? '' }, mh)}${lateNote(c, m)}` });
+    reserveUsed.add(c.no);
+  }
+
   // whatever is left: no challan, or too large for any one challan
   for (const [k, grp] of groupBy(pending(), anyBreakup)) {
     const [month, mh, code] = k.split('|');
@@ -205,7 +307,7 @@ export function matchChallans(challans: ChallanIn[], rows: RowIn[]): MatchResult
     groupFrom = grp.map(r => r.dateDeducted).sort().at(-1)!;
     const cands = [...candidates(month, code, mh, false), ...candidates(month, code, mh, true)];
     const msg = cands.length
-      ? `${describe(month, mh, code, grp, total)}: no single challan has enough left (most left: Rs ${inr(r2(Math.max(...cands.map(c => capacity(c, c.breakup ? code : '*')))))}). Split across challans, a short deposit, or a challan missing from the sheet - needs a decision.`
+      ? `${describe(month, mh, code, grp, total)}: no single challan has enough left (most left: Rs ${inr(r2(Math.max(0, ...cands.map(c => capacity(c, c.breakup ? code : '*')))))}). Split across challans, a short deposit, or a challan missing from the sheet - needs a decision.`
       : `${describe(month, mh, code, grp, total)}: no challan dated on or after ${groupFrom}${code !== '*' ? ` covering section ${code}` : ''}.Add the challan, or decide how this is to be paid (needs a decision).`;
     exceptions.push({ kind: cands.length ? 'too-large' : 'no-challan', rows: grp.map(r => r.row), challans: [...new Set(cands.map(c => c.no))], message: msg });
     for (const r of grp) out.push({ row: r.row, challanNo: null, status: 'exception', reason: msg });
@@ -221,6 +323,11 @@ export function matchChallans(challans: ChallanIn[], rows: RowIn[]): MatchResult
     const balance = r2(c.tax - usedHere);
     if (!mine.length) notes.push('not used by this return (may belong to another form or quarter)');
     else if (balance > 1) notes.push(`Rs ${inr(balance)} not used by this return - must be used by another form, or is excess`);
+    if (reserveUsed.has(c.no)) notes.push(`part of the share for sections this return does not have was used (Rs ${inr(r2(usedHere - (c.tax - reserved(c))))}) - check the other return (e.g. salary, Form 138) still has enough`);
+    else if (c.breakup && mine.length) {
+      const diff = Object.entries(c.breakup).filter(([k]) => codesHere.has(k)).map(([k, v]) => [k, r2(mine.filter(r => r.code === k).reduce((a, r) => a + r.tax, 0) - v)] as const).filter(([, d]) => Math.abs(d) > 1);
+      if (diff.length) notes.push(`rows by section differ from the challan's section breakup (${diff.map(([k, d]) => `${k} ${d > 0 ? '+' : ''}${inr(d)}`).join(', ')}) - allowed, but check`);
+    }
     if (c.breakup) {
       const bsum = r2(Object.values(c.breakup).reduce((a, b) => a + b, 0));
       if (Math.abs(bsum - c.tax) > 1) notes.push(`section breakup adds to Rs ${inr(bsum)}, challan tax is Rs ${inr(c.tax)}`);
@@ -254,7 +361,25 @@ const serialToYmd = (v: unknown): Ymd => {
 const num = (v: unknown) => (v === null || v === undefined || v === '' ? 0 : Number(String(v).replace(/,/g, '')));
 
 /** Read challans and rows for matching. Section codes must already be filled (Phase 2 applySections). */
-export function readForMatching(data: ArrayBuffer | Uint8Array): { challans: ChallanIn[]; rows: RowIn[]; problems: string[] } {
+/**
+ * Tax column check (v1.5): Tax should be about Amount x Rate % / 100. A Tax equal to Amount x Rate
+ * (the /100 left out of a formula) makes every row 100 times too big - that stops matching.
+ * Other differences over Rs 1 are only warnings (lower deduction, rounding to rupees, short deduction).
+ */
+export function checkTaxColumn(rows: { row: number; amount: number; rate: number; tax: number }[]): { problems: string[]; warnings: string[] } {
+  const hundred = rows.filter(r => r.amount > 0 && r.rate > 0 && r.tax > 0 && Math.abs(r.tax - r.amount * r.rate) <= Math.max(1, r.amount * r.rate * 0.001));
+  const other = rows.filter(r => r.amount > 0 && r.rate > 0 && !hundred.includes(r) && Math.abs(r.tax - r.amount * r.rate / 100) > 1);
+  const problems: string[] = [];
+  if (hundred.length) {
+    const e = hundred[0];
+    problems.push(`Tax looks like Amount x Rate % without dividing by 100 on ${hundred.length} row(s) - e.g. row ${e.row}: ${inr(e.amount)} x ${e.rate} = ${inr(e.tax)}, but the tax should be about ${inr(r2(e.amount * e.rate / 100))}. Correct the Tax column (if it is a formula, e.g. =G2*H2/100) and upload again. Put the tax actually deducted, as in the books.`);
+  }
+  const warnings = other.slice(0, 20).map(r => `Row ${r.row}: Tax ${inr(r.tax)} differs from Amount x Rate % (${inr(r2(r.amount * r.rate / 100))}) - fine if it is the tax actually deducted (lower deduction, rounding); otherwise correct it`);
+  if (other.length > 20) warnings.push(`... and ${other.length - 20} more row(s) like this`);
+  return { problems, warnings };
+}
+
+export function readForMatching(data: ArrayBuffer | Uint8Array): { challans: ChallanIn[]; rows: RowIn[]; problems: string[]; warnings: string[] } {
   const wb = XLSX.read(data, { type: 'array' });
   const grid = (sh: string) => XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[sh], { header: 1, raw: true, defval: null });
   const problems: string[] = [];
@@ -287,7 +412,10 @@ export function readForMatching(data: ArrayBuffer | Uint8Array): { challans: Cha
         challanNo: cn === null || cn === '' ? null : Number(cn) });
     } catch (e) { problems.push(`Deductees row ${k + 2}: ${(e as Error).message}`); }
   });
-  return { challans, rows, problems };
+  const amt = di('Amount'), rate = di('Rate %');
+  const tc = amt >= 0 && rate >= 0 ? checkTaxColumn(dg.slice(1).map((r, k) => ({ row: k + 2, amount: num(r[amt]), rate: num(r[rate]), tax: num(r[di('Tax')]) })).filter(r => r.amount || r.tax))
+    : { problems: [], warnings: [] };
+  return { challans, rows, problems: [...tc.problems, ...problems], warnings: tc.warnings };
 }
 
 /** Write the matched challan numbers into the Deductees "Challan #" column (approved rows only). */

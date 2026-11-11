@@ -106,7 +106,7 @@ Read all three with `TextDecoder('latin1')`. Show one table of issues: Errors fi
 **A. Template.** "Download blank input workbook" now uses `makeTemplateFull(form)` (replaces `makeTemplateWithSection`). Help text: *"'Challan #' on each deductee row is now optional - leave it blank and the tool matches rows to challans. On the Challans sheet, give the FULL challan (even if part of it is for another form, e.g. TCS paid with TDS). Optional but recommended when one challan covers several sections or forms: 'Section breakup' from the challan counterfoil, e.g. 1023=5000; 1073=180000; and the 'Major head' (0020 company / 0021 non-company)."*
 
 **B. New step "Challan matching"** after "Section codes" (work on the bytes returned by `applySections`):
-1. `{challans, rows, problems} = readForMatching(bytes2)`; show `problems` first if any.
+1. `{challans, rows, problems, warnings} = readForMatching(bytes2)`. Show `problems` first in red and **stop** if any (e.g. the Tax column is Amount x Rate without /100 - every tax 100 times too big; the user must correct the workbook and upload again). Show `warnings` in amber (tax differs from Amount x Rate % / 100 - fine if it is the tax actually deducted) and let the user continue.
 2. `res = matchChallans(challans, rows)`. Show three panels:
    - **Rows** table: Row, Name, PAN, Section, Date deducted, Tax, **Challan**, **Why** (`reason`). `given` / `matched` green; `exception` red with a drop-down to pick a challan (all challans, showing number, date, amount, balance) - the user's choice is applied as typed-in.
    - **Challans** table from `res.challans`: Challan, Date, Tax, Used by this return, **Balance**, Interest paid, Interest due, Notes. Balance > 0: amber, note "part of this challan belongs to another form, or is excess - it must be used there". Interest due > paid: red.
@@ -140,6 +140,19 @@ Add `src/core/challanPdf.ts` and `src/core/aiExceptions.ts` exactly as given, an
 - A made-up receipt whose section amounts do not add up to the tax is refused, not guessed.
 - With two same-date challans and no major head, the rules leave the rows open; a mocked Gemini answer linking them sensibly is accepted, one naming a non-existent row is rejected, and one using a duplicate challan for a later month is "needs approval".
 - With "Never use AI" on, no request is ever made (check the browser's network tab).
+
+## Version 1.5 changes (automatic challan split) - replace src/core/challanMatch.ts with the new one
+
+The matching engine now splits challans itself; the screens stay as in Phase 3 / 4. What changes for the user:
+- **Tax column check** (step B.1 above): a Tax that is Amount x Rate (the /100 missing) stops the step with a plain message; other differences are warnings.
+- **Month plan**: each challan is tied to the month it pays (no interest = the month it is on time for; with interest = the month it is late for). Rows go to their month's challan, even when another challan is dated earlier. Same-date pairs with no major head: the smaller is taken as 0020 (company) - say so on screen ("check with the challan receipts"); reading the receipt PDFs (Phase 4) gives the real major head.
+- **Split**: rows that do not fit their month's challan move to another challan with money left (top-up challans first, same major head first; the other major head only as a last resort, noted per SOP rule 11).
+- **Shared challans**: the section breakup now reserves only the share of sections this return has none of (e.g. 1002 salary for Form 138). It is used only as a last resort, and then the row and the challan say "check the other return still has enough". A breakup that differs from the rows is a note on the challan, not a block.
+- Show every row's `reason` (it says which rule placed it) and every challan's `notes` in the tables. Exceptions now only appear for what is genuinely undecidable (possible duplicates, no challan dated after the deduction, interest short).
+
+### Version 1.5 acceptance tests
+- `node test/phase5.test.ts` passes (made-up data): July paid late with interest after August was paid on time - rows go 3,3,4,5,1,2; nothing is left for a decision.
+- A workbook whose Tax column is `=Amount*Rate` (no /100) is stopped at the Challan matching step with the "without dividing by 100" message.
 
 ## Text to show on every page (footer)
 

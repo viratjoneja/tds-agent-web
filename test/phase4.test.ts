@@ -82,7 +82,7 @@ const row = (pan: string, code: string, date: string, tax: number): RowIn => ({ 
 const IND = 'ABCPK1234Z', CO = 'ABCCK1234Z';
 
 // two same-date challans that both fit -> exception left by the rules
-const challans = [ch(1, '2026-08-07', 9500), ch(2, '2026-08-07', 9600), ch(3, '2026-09-07', 500)];   // same date, no major head: rules cannot choose
+const challans = [ch(1, '2026-08-07', 9500), ch(2, '2026-08-07', 9600), ch(3, '2026-08-07', 9700)];   // three challans, same date, no major head: rules cannot choose
 const rows = [row(IND, '1023', '2026-07-31', 4000), row(IND, '1023', '2026-07-31', 5000), row(CO, '1024', '2026-07-31', 9000)];
 const res = matchChallans(challans, rows);
 const payload = maskedPayload(challans, rows, res);
@@ -124,8 +124,8 @@ n = 1;
 const shCh = [ch(1, '2026-08-07', 10000, { majorHead: '0021', breakup: { 1023: 2000, 1073: 8000 } })];
 const shRows = [row(IND, '1023', '2026-07-31', 3000)];
 const shRes = matchChallans(shCh, shRows);
-const shChecked = checkProposals(JSON.stringify({ proposals: [{ rows: [2], challan: 1, explanation: 'x' }] }), shCh, shRows, shRes);
-check(shChecked.proposals[0].verdict === 'needs-approval' && /Section 1023/.test(shChecked.proposals[0].checks.join()), 'more than the section share: needs approval');
+check(shRes.rows[0].status === 'matched' && /share for section 1073 \(another return\)/.test(shRes.rows[0].reason) && /check the other return/.test(shRes.challans[0].notes.join()),
+  'no room in the shares for this return: the other share is used as a last resort, with a note to check that return');
 n = 1;
 const bigRows = [row(IND, '1023', '2026-07-31', 50000)];
 const bigRes = matchChallans(shCh, bigRows);

@@ -34,4 +34,5 @@ Node 22.6 or later. `npm install`, then `node test/parity.test.ts`.
 | 2 | Section codes worked out from the section as written in the working | done (1.2.0) |
 | 3 | Rows matched to challans by rules; challan matching review page | done (1.3.0) |
 | 4 | Challan receipt PDFs read by rules in the browser (Gemini fallback, masked); Gemini proposals for open challan points, masked, checked by rules, applied only on approval | done (1.4.0) |
+| 4.5 | Automatic challan split: month plan (interest shows the month paid late), same-date 0020/0021 pairs, overflow to top-up challans, salary share kept; Tax column check (missing /100) | done (1.5.0) |
 | 5 | Tests on every rule; local checks on real Q2 cases | ongoing |
