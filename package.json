@@ -14,6 +14,7 @@
     "test": "node test/parity.test.ts && node test/phase1.test.ts && node test/phase2.test.ts && node test/phase3.test.ts && node test/phase4.test.ts && node test/phase5.test.ts && node test/phase6.test.ts"
   },
   "dependencies": {
+    "firebase": "12.13.0",
     "pdfjs-dist": "4.10.38",
     "react": "18.3.1",
     "react-dom": "18.3.1",

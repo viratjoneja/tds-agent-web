@@ -11,6 +11,14 @@ Web app that turns a filled input workbook into a Protean (NSDL) e-TDS/TCS retur
 3. Open the app and check the footer: engine `ecea70457ab6`, **self-test passed**. Quick test: a workbook whose Tax column is `=Amount*Rate` (no /100) must stop at step 4 with "Tax looks like Amount x Rate % without dividing by 100".
 4. Use AI Studio only for look and feel. Do not let it change the engine files (listed in `engine-files.mjs`); see `AGENTS.md`. After each new release here, pull the latest from GitHub in AI Studio's GitHub settings.
 
+## Office portal (tools.ykjoneja.com/tds)
+
+On branch `claude/office-portal` the app runs as the Cloud Run service `tds` behind TRUE GST's Firebase Hosting, at `/tds/`:
+- Only signed-in `@ykjoneja.com` Google Workspace accounts can use it (`src/app/AuthGate.tsx`); `/api/gemini` checks the login token on the server (`auth.mjs`).
+- Each downloaded return adds one line to the office run log (deductor, TAN, form, period, totals - no workbook or deductee rows) (`src/app/office.ts`).
+- `BASE_PATH` (default `/tds`) sets where it is served; `BASE_PATH=/` serves it at the root as before.
+- Engine files are unchanged: fingerprint `ecea70457ab6`.
+
 ## Run it anywhere else (Cloud Run, a VM, your PC)
 
 ```

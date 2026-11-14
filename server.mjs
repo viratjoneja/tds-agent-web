@@ -11,6 +11,8 @@ import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { verifyStaffToken } from './auth.mjs';
 
 const DIST = join(fileURLToPath(new URL('.', import.meta.url)), 'dist');
 const MODEL = process.env.GEMINI_MODEL || 'gemini-flash-latest';
@@ -18,6 +20,13 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
   '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.xlsx': 'application/octet-stream',
   '.txt': 'application/octet-stream', '.woff2': 'font/woff2' };
 const MAX_BODY = 2_000_000;
+// Office portal: the app is served under BASE_PATH (default /tds) and /api/gemini needs a signed-in office account.
+const BASE = (process.env.BASE_PATH ?? '/tds').replace(/\/+$/, '');
+const OFFICE_DOMAIN = process.env.OFFICE_DOMAIN || 'ykjoneja.com';
+const PROJECT_ID = process.env.FIREBASE_PROJECT_ID
+  || JSON.parse(readFileSync(new URL('./src/app/firebase-config.json', import.meta.url), 'utf8')).projectId;
+/** Path without the BASE prefix, so /tds/api/gemini and /api/gemini are treated alike. */
+const localPath = (pathname) => (BASE && (pathname === BASE || pathname.startsWith(BASE + '/')) ? pathname.slice(BASE.length) || '/' : pathname);
 
 const send = (res, code, body, type = 'application/json') => {
   res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
@@ -27,9 +36,12 @@ const send = (res, code, body, type = 'application/json') => {
 /** Handles /api/*; returns false for anything else. Also used by the Vite dev server. */
 export async function handleApi(req, res) {
   const url = new URL(req.url, 'http://x');
+  url.pathname = localPath(url.pathname);
   if (url.pathname === '/api/health') { send(res, 200, { ai: !!process.env.GEMINI_API_KEY, model: MODEL }); return true; }
   if (url.pathname !== '/api/gemini') return false;
   if (req.method !== 'POST') { send(res, 405, { error: 'POST only' }); return true; }
+  try { await verifyStaffToken(req.headers.authorization, PROJECT_ID, OFFICE_DOMAIN); }
+  catch (e) { send(res, 401, { error: e.message || 'Not signed in' }); return true; }
   if (!process.env.GEMINI_API_KEY) { send(res, 503, { error: 'AI is not set up on this server (GEMINI_API_KEY missing)' }); return true; }
   let raw = '';
   for await (const chunk of req) { raw += chunk; if (raw.length > MAX_BODY) { send(res, 413, { error: 'Request too large' }); return true; } }
@@ -58,7 +70,7 @@ export async function handleApi(req, res) {
 }
 
 async function serveStatic(req, res) {
-  const path = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname)).replace(/^([/\\])+/, '');
+  const path = normalize(decodeURIComponent(localPath(new URL(req.url, 'http://x').pathname))).replace(/^([/\\])+/, '');
   let file = join(DIST, path);
   if (!file.startsWith(DIST)) { send(res, 403, 'Forbidden', 'text/plain'); return; }
   try { if ((await stat(file)).isDirectory()) file = join(file, 'index.html'); } catch { file = join(DIST, 'index.html'); }

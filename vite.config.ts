@@ -16,6 +16,8 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(pkg.version),
     __ENGINE_HASH__: JSON.stringify(engineHash()),
   },
+  // Office portal: served at tools.ykjoneja.com/tds/ (set BASE_PATH=/ to serve at the root).
+  base: (process.env.BASE_PATH ?? '/tds').replace(/\/+$/, '') + '/',
   build: { outDir: 'dist', chunkSizeWarningLimit: 4000 },
   server: { port: 5173 },
 });

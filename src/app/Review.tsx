@@ -5,6 +5,7 @@ import { reviewModel, type ReviewModel } from '../review.ts';
 import { checkCsi } from '../csi.ts';
 import { compareStatistics, readErrFile, readStatistics, readWarningFile, type FvuIssue } from '../fvuResult.ts';
 import { download, inr, readLatin1, reviewWorkbook } from './util.ts';
+import { logTdsRun } from './office.ts';
 import { Table, autoCols } from './Table.tsx';
 import type { Session, StepProps } from './App.tsx';
 
@@ -93,7 +94,8 @@ export function DownloadStep({ s, next, selfTest }: StepProps) {
       <h2>6. Download</h2>
       {block.length > 0 && <div className="banner error"><ul>{block.map(b => <li key={b}>{b}</li>)}</ul></div>}
       <div className="actions left">
-        <button disabled={block.length > 0} onClick={() => download(encodeReturn(s.lines!), s.fileName)}>Download return file ({s.fileName})</button>
+        <button disabled={block.length > 0} onClick={() => { download(encodeReturn(s.lines!), s.fileName);
+          void logTdsRun({ deductor: rv.deductor, tan: rv.tan, form: rv.form, fy: rv.fy, quarter: rv.quarter, totals: rv.totals as unknown as Record<string, unknown> }); }}>Download return file ({s.fileName})</button>
         <button className="ghost" onClick={() => download(reviewWorkbook(sheets()), s.fileName.replace(/\.txt$/, '_review.xlsx'))}>Download review workbook</button>
         {s.csi && <button className="ghost" onClick={() => download(s.csi!.bytes, s.csi!.info.validName)}>Download CSI with a valid name ({s.csi.info.validName})</button>}
       </div>
