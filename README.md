@@ -17,7 +17,7 @@ On branch `claude/office-portal` the app runs as the Cloud Run service `tds` beh
 - Only signed-in `@ykjoneja.com` Google Workspace accounts can use it (`src/app/AuthGate.tsx`); `/api/gemini` checks the login token on the server (`auth.mjs`).
 - Each downloaded return adds one line to the office run log (deductor, TAN, form, period, totals - no workbook or deductee rows) (`src/app/office.ts`).
 - `BASE_PATH` (default `/tds`) sets where it is served; `BASE_PATH=/` serves it at the root as before.
-- Engine files are unchanged: fingerprint `ecea70457ab6`.
+- Engine files are the released ones: fingerprint `875d9f6b55c3` (v2.1.0).
 
 ## Run it anywhere else (Cloud Run, a VM, your PC)
 
