@@ -15,7 +15,7 @@ Web app that turns a filled input workbook into a Protean (NSDL) e-TDS/TCS retur
 
 On branch `claude/office-portal` the app runs as the Cloud Run service `tds` behind TRUE GST's Firebase Hosting, at `/tds/`:
 - Only signed-in `@ykjoneja.com` Google Workspace accounts can use it (`src/app/AuthGate.tsx`); `/api/gemini` checks the login token on the server (`auth.mjs`).
-- Each downloaded return adds one line to the office run log (deductor, TAN, form, period, totals - no workbook or deductee rows) (`src/app/office.ts`).
+- No run log since v2.4.1: the firm's office system is where work is logged; the tool stores nothing outside the browser.
 - `BASE_PATH` (default `/tds`) sets where it is served; `BASE_PATH=/` serves it at the root as before.
 - Engine files are the released ones: fingerprint `df48c9606d51` (v2.1.0).
 
@@ -69,4 +69,5 @@ Node 22.6 or later: `npm install`, `npm test` (engine), `npm run typecheck`, `np
 | 6.5 | Challans step shows sections by name (e.g. 392(7) Salary - private employee) instead of codes: split, split editor drop-down, offers, notes, rows, set-off download | done (2.2.1) |
 | 6.6 | Rows without a challan shown in groups (month, section, payee type) with why and a suggested challan worked out by the rules; tick groups or rows and link in bulk (to the suggestions or one chosen challan), one confirmation for any use of another return's share, undo; linked rows on the other major head allowed with an SOP rule 11 note | done (2.3.0) |
 | 6.7 | Data checks at upload by workbook row, in plain words (PAN, amount, tax, dates); late deductions (paid in an earlier quarter, deducted in this one) reported as they are - verified with Protean FVU 1.2 - with an interest estimate; Review: balances left on challans with a confirmation, fresh-CSI upload; formatted Excel reports (ExcelJS): dashboard, entries to challans and sections, challan set-off, challan by section, section x challan, checks | done (2.4.0) |
+| 6.8 | Office run log switched off (no Firestore writes); sign-in unchanged | done (2.4.1) |
 | 5 | Tests on every rule; local checks on real Q2 cases | ongoing |
