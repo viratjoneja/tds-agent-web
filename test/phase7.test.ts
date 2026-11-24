@@ -6,7 +6,7 @@
  * Run from the repo root:  node test/phase7.test.ts
  */
 import * as XLSX from 'xlsx';
-import { APPROVED_COLUMN, BREAKUP_COLUMN, approvalOptions, matchChallans, makeTemplateFull, parseBreakup, readForMatching, setApproved, setChallanSplit, type ChallanIn, type RowIn } from '../src/challanMatch.ts';
+import { APPROVED_COLUMN, BREAKUP_COLUMN, approvalOptions, matchChallans, openGroups, makeTemplateFull, parseBreakup, readForMatching, setApproved, setChallanSplit, type ChallanIn, type RowIn } from '../src/challanMatch.ts';
 import { roundTax } from '../src/app/rates.ts';
 
 let failures = 0;
@@ -85,6 +85,27 @@ const zb = new Uint8Array(XLSX.write(tz, { type: 'array', bookType: 'xlsx' }) as
 const rounded = roundTax(zb);
 check(rounded.rows === 1 && readForMatching(rounded.bytes).rows[0].tax === 271, 'tax rounded to rupees');
 check(roundTax(rounded.bytes).rows === 0, 'whole-rupee tax: unchanged');
+
+// 9. v2.3: open rows in groups, each with a suggestion that adds up; applying them links everything
+n = 1;
+const g9ch = [ch(1, '2026-08-07', 60000, { majorHead: '0021', breakup: { 1002: 50000, 1023: 10000 } }),
+  ch(2, '2026-09-07', 40000, { majorHead: '0021', breakup: { 1002: 35000, 1031: 5000 } }),
+  ch(3, '2026-09-07', 3000, { majorHead: '0020', breakup: { 1031: 3000 } })];
+const g9rows = [row(IND, '1023', '2026-07-31', 9000), row(IND, '1023', '2026-07-31', 2500), row(IND, '1031', '2026-08-31', 4000),
+  row(IND, '1031', '2026-08-31', 1800), row('ABCCK1234Z', '1031', '2026-08-31', 3500)];
+const g9 = matchChallans(g9ch, g9rows, F);
+const groups = openGroups(g9ch, g9rows, g9);
+check(groups.length > 0 && groups.reduce((a, g) => a + g.rows.length, 0) === g9.rows.filter(x => x.challanNo === null).length,
+  `open rows grouped: ${groups.map(g => `${g.month} ${g.head} ${g.code} x${g.rows.length}`).join('; ')}`);
+check(groups.every(g => g.suggest && g.suggest.fromOther >= 0), `each group has a suggestion: ${groups.map(g => `#${g.suggest?.no} +${g.suggest?.fromOther}${g.suggest?.otherHead ? ' other head' : ''}`).join('; ')}`);
+const extra = new Map<number, number>();
+for (const g of groups) if (g.suggest) extra.set(g.suggest.no, (extra.get(g.suggest.no) ?? 0) + g.suggest.fromOther);
+const applied = g9ch.map(c => ({ ...c, approved: extra.get(c.no) ?? null }));
+const linkedRows = g9rows.map(r => { const g = groups.find(x => x.rows.includes(r.row)); return g?.suggest ? { ...r, challanNo: g.suggest.no } : r; });
+const after = matchChallans(applied, linkedRows, F);
+check(after.rows.every(x => x.challanNo !== null) && !after.exceptions.some(e => ['over-limit', 'given-mismatch', 'split-missing'].includes(e.kind)),
+  'applying every suggestion (links + the approvals it lists) links all rows, nothing over a limit');
+check(after.rows.some(x => /SOP rule 11/.test(x.reason)) || !groups.some(g => g.suggest?.otherHead), 'a company row linked to a 0021 challan is allowed with the SOP rule 11 note');
 
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
 process.exit(failures ? 1 : 0);

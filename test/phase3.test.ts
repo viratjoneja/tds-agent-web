@@ -84,8 +84,8 @@ check(r.challans[0].interestDue === 900 && r.exceptions.some(e => e.kind === 'in
 // 10. challan typed in the workbook: kept if it fits, flagged if not
 n = 1;
 r = matchChallans([ch(1, '2026-08-07', 5000, { majorHead: '0020' })], [row(IND, '1023', '2026-07-31', 1000, 1), row(CO, '1024', '2026-09-30', 100, 1)]);
-check(r.rows[0].status === 'exception' && /needs major head 0021/.test(r.rows[0].reason) && /before the month of deduction/.test(r.rows[1].reason),
-  'typed-in challan checked: wrong major head and challan before the deduction month are flagged');
+check(r.rows[0].status === 'given' && /needs 0021 - reported as deposited \(SOP rule 11\)/.test(r.rows[0].reason) && r.rows[1].status === 'exception' && /before the month of deduction/.test(r.rows[1].reason),
+  'typed-in challan checked: other major head allowed with an SOP rule 11 note (v2.3); challan before the deduction month flagged');
 
 // 11. workbook round trip: template, read, match, apply -> the frozen core builds the same return as the hand-linked fixture
 const tpl = XLSX.read(makeTemplateFull('140'));

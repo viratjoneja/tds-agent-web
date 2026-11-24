@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { applyChallanMatches, approvalOptions, formatBreakup, matchChallans, readForMatching, setApproved, setChallanSplit, type ApprovalOption, type ChallanIn, type ChallanUse, type RowIn } from '../challanMatch.ts';
+import { applyChallanMatches, approvalOptions, formatBreakup, matchChallans, openGroups, readForMatching, setApproved, setChallanSplit, type ApprovalOption, type ChallanIn, type ChallanUse, type OpenGroup, type RowIn } from '../challanMatch.ts';
 import { addChallansToWorkbook, fromGemini, geminiChallanRequest, maskReceiptText, readChallanPdfs, type ChallanReceipt, type ReadResult } from '../challanPdf.ts';
 import { applyProposals, checkProposals, geminiExceptionRequest, maskedPayload, type CheckedProposal } from '../aiExceptions.ts';
 import { askGemini } from './ai.ts';
@@ -25,6 +25,7 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
   const [msg, setMsg] = useState<{ cls: string; text: string }[]>([]);
   const [showAll, setShowAll] = useState(false);
   const [editing, setEditing] = useState<number | null>(null);
+  const [undo, setUndo] = useState<Uint8Array[]>([]);
   const opts = useMemo(() => ({ form: s.form }), [s.form]);
 
   const m = useMemo(() => { try { return readForMatching(work); } catch (e) { return { challans: [], rows: [], problems: [(e as Error).message], warnings: [] }; } }, [work]);
@@ -64,7 +65,21 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
       'Allowed by you from other share': u.approved, 'Used by this return': u.usedHere, 'Of which from other share': u.takenFromOther,
       'Left for this return': u.left, 'Left for other returns': Math.round((u.otherShare - u.takenFromOther) * 100) / 100 };
   }) });
-  const shownRows = res ? (showAll ? res.rows : res.rows.filter(r => r.status === 'exception' || overrides[r.row])) : [];
+  const groups = useMemo(() => (res ? openGroups(m.challans, rowsIn, res) : []), [res, m, rowsIn]);
+  const points = res ? res.exceptions.filter(e => e.kind !== 'too-large' && e.kind !== 'no-challan') : [];
+  // link rows (written into the workbook's Challan # column) and record any approval of another return's share
+  const linkRows = (p: LinkPlan) => {
+    try {
+      let w = work;
+      for (const a of p.approvals) w = setApproved(w, a.no, Math.round(((Number(chById.get(a.no)?.approved) || 0) + a.extra) * 100) / 100);
+      w = applyChallanMatches(w, p.links);
+      setUndo(u => [...u, work]);
+      setOverrides(o => { const n = { ...o }; for (const l of p.links) delete n[l.row]; return n; });
+      setWork(w);
+      setMsg([{ cls: 'ok', text: `${p.label}${p.approvals.length ? `; allowed ${p.approvals.map(a => `Rs ${inr(a.extra, 0)} on ${chById.get(a.no)?.serial}`).join(', ')} from other returns' share (recorded on the challan)` : ''}.` }]);
+    } catch (e) { setMsg([{ cls: 'bad', text: (e as Error).message }]); }
+  };
+  const undoLast = () => { const prev = undo.at(-1); if (!prev) return; setUndo(u => u.slice(0, -1)); setWork(prev); setMsg([{ cls: 'ok', text: 'Last linking undone.' }]); };
 
   return (
     <section className="card">
@@ -105,17 +120,21 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
             { key: 'notes', label: 'Notes', wrap: true, value: c => withSectionNames((useById.get(c.no)?.notes ?? []).join('; ')) },
           ]} />
 
-        {res.exceptions.length > 0 && <>
-          <details className="points" open={res.exceptions.length <= 3}>
-            <summary><h3>Points needing a decision ({res.exceptions.length})</h3></summary>
-            <div className="cards">{res.exceptions.map((e, i) => <div key={i} className={`point ${e.kind}`}><b>{e.kind.replace('-', ' ')}</b> {withSectionNames(e.message)}</div>)}</div>
+        {points.length > 0 && <>
+          <details className="points" open={points.length <= 3}>
+            <summary><h3>Points needing a decision ({points.length})</h3></summary>
+            <div className="cards">{points.map((e, i) => <div key={i} className={`point ${e.kind}`}><b>{e.kind.replace('-', ' ')}</b> {withSectionNames(e.message)}</div>)}</div>
           </details>
-          {ai && unlinked > 0 && <AiProposals challans={m.challans} rows={rowsIn} res={res} form={s.form} onApply={links => setOverrides(o => ({ ...o, ...links }))} />}
         </>}
 
+        {unlinked > 0 && <OpenRows groups={groups} rowById={rowById} chById={chById} useById={useById} challans={m.challans}
+          onLink={linkRows} canUndo={undo.length > 0} onUndo={undoLast} />}
+        {ai && unlinked > 0 && <AiProposals challans={m.challans} rows={rowsIn} res={res} form={s.form} onApply={links => setOverrides(o => ({ ...o, ...links }))} />}
+
         <h3>Deductee rows ({res.rows.length}) {unlinked > 0 ? <span className="bad">- {unlinked} need a challan</span> : <span className="ok">- all linked</span>}
-          {' '}<button className="link" onClick={() => setShowAll(v => !v)}>{showAll ? 'show only rows that need attention' : `show all ${res.rows.length} rows`}</button></h3>
-        {shownRows.length > 0 ? <Table rows={shownRows} total={false}
+          {' '}<button className="link" onClick={() => setShowAll(v => !v)}>{showAll ? 'hide the full list' : `show all ${res.rows.length} rows`}</button>
+          {unlinked === 0 && undo.length > 0 && <>{' '}<button className="link" onClick={undoLast}>undo the last linking</button></>}</h3>
+        {showAll && <Table rows={res.rows} total={false}
           rowClass={r => (r.status === 'exception' ? (r.challanNo ? 'row-warn' : 'row-bad') : '')}
           cols={[
             { key: 'row', label: 'Row' },
@@ -132,7 +151,7 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
                   {m.challans.map(c => <option key={c.no} value={c.no}>#{c.no} {c.serial} {c.date} (left for this return {inr(useById.get(c.no)?.left ?? 0, 0)})</option>)}
                 </select>) : <>#{r.challanNo} {chById.get(r.challanNo!)?.serial} {chById.get(r.challanNo!)?.date}</>) },
             { key: 'reason', label: 'Why', wrap: true, render: r => <small>{withSectionNames(r.reason)}</small> },
-          ]} /> : <p className="muted">No rows need attention.</p>}
+          ]} />}
       </>}
 
       {editing !== null && chById.get(editing) && (
@@ -221,6 +240,140 @@ function SplitEditor({ challan, form, codesHere, onCancel, onSave }:
     </div>);
 }
 
+/** A linking plan: rows to challans, and how much of each challan's other-return share that needs (the user's OK). */
+type LinkPlan = { links: { row: number; challanNo: number }[]; approvals: { no: number; extra: number }[]; otherHeadRows: number; label: string };
+
+const monthName = (m: string) => new Date(`${m}-01T00:00:00`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+
+/** Rows without a challan, in groups with a suggestion each; tick groups or rows and link them in one go. */
+function OpenRows({ groups, rowById, chById, useById, onLink, canUndo, onUndo }:
+  { groups: OpenGroup[]; rowById: Map<number, RowIn>; chById: Map<number, ChallanIn>; useById: Map<number, ChallanUse>; challans: ChallanIn[];
+    onLink: (p: LinkPlan) => void; canUndo: boolean; onUndo: () => void }) {
+  const [sel, setSel] = useState<Set<number>>(new Set());
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  const [target, setTarget] = useState('');
+  const [confirm, setConfirm] = useState<LinkPlan | null>(null);
+  const [err, setErr] = useState('');
+  const allRows = groups.flatMap(g => g.rows);
+  const taxOf = (row: number) => rowById.get(row)?.tax ?? 0;
+  const selRows = allRows.filter(r => sel.has(r));
+  const selTax = selRows.reduce((a, r) => a + taxOf(r), 0);
+  const groupOf = new Map(groups.flatMap(g => g.rows.map(r => [r, g] as const)));
+  const toggle = (rows: number[], on: boolean) => setSel(s => { const n = new Set(s); for (const r of rows) (on ? n.add(r) : n.delete(r)); return n; });
+  const label = (no: number) => `${chById.get(no)?.serial} (${chById.get(no)?.date})`;
+  const headOf = (row: number) => (/^[A-Z]{3}C/.test(rowById.get(row)?.pan ?? '') ? '0020' : '0021');
+
+  // how much of a challan's other-return share the rows need, after its own money for this return
+  const plan = (byChallan: Map<number, number[]>, what: string): LinkPlan | string => {
+    const links: LinkPlan['links'] = [], approvals: LinkPlan['approvals'] = [];
+    let otherHeadRows = 0;
+    for (const [no, rows] of byChallan) {
+      const c = chById.get(no)!, u = useById.get(no)!;
+      const early = rows.filter(r => (rowById.get(r)?.dateDeducted ?? '') > c.date);
+      if (early.length) return `${early.length} row(s) were deducted after ${label(no)} was paid - a challan can only pay tax already deducted.`;
+      if (u.limitFrom === 'missing') return `${label(no)} has no split yet - enter it first.`;
+      const need = rows.reduce((a, r) => a + taxOf(r), 0);
+      const extra = Math.round(Math.max(0, need - Math.max(0, u.left)) * 100) / 100;
+      const avail = u.otherShare - u.approved;
+      if (extra > avail + 0.5) return `${label(no)} has only Rs ${inr(Math.max(0, u.left), 0)} of this return's money and Rs ${inr(avail, 0)} of other returns' share left - not enough for Rs ${inr(need, 0)}.`;
+      if (extra > 0.5) approvals.push({ no, extra });
+      otherHeadRows += rows.filter(r => c.majorHead && c.majorHead !== headOf(r)).length;
+      links.push(...rows.map(row => ({ row, challanNo: no })));
+    }
+    return { links, approvals, otherHeadRows, label: what };
+  };
+  const run = (p: LinkPlan | string) => {
+    setErr('');
+    if (typeof p === 'string') { setErr(p); return; }
+    if (p.approvals.length || p.otherHeadRows) setConfirm(p); else { onLink(p); setSel(new Set()); }
+  };
+  const linkSuggested = () => {
+    const by = new Map<number, number[]>(); let none = 0;
+    for (const r of selRows) { const g = groupOf.get(r); if (!g?.suggest) { none++; continue; } by.set(g.suggest.no, [...(by.get(g.suggest.no) ?? []), r]); }
+    if (!by.size) { setErr('None of the selected rows has a suggested challan.'); return; }
+    run(plan(by, `${selRows.length - none} row(s) linked to the suggested challans${none ? ` (${none} without a suggestion left as they are)` : ''}`));
+  };
+  const linkTo = () => {
+    if (!target) { setErr('Choose the challan to link to.'); return; }
+    run(plan(new Map([[Number(target), selRows]]), `${selRows.length} row(s) linked to ${label(Number(target))}`));
+  };
+
+  return (
+    <div className="open-rows">
+      <h3>Rows that need a challan ({allRows.length} rows · Rs {inr(allRows.reduce((a, r) => a + taxOf(r), 0), 0)})</h3>
+      <p className="muted">Grouped by month, section and payee type. Tick groups (or open a group and tick rows), then link them with the bar below. Taking another return's money always asks you first.
+        {canUndo && <>{' '}<button className="link" onClick={onUndo}>Undo the last linking</button></>}</p>
+      <div className="scroll"><table className="groups">
+        <thead><tr>
+          <th><input type="checkbox" aria-label="Select all" checked={selRows.length === allRows.length && allRows.length > 0}
+            ref={el => { if (el) el.indeterminate = selRows.length > 0 && selRows.length < allRows.length; }}
+            onChange={e => toggle(allRows, e.target.checked)} /></th>
+          <th>Rows</th><th>Deducted</th><th className="wrap">Section</th><th>Payee</th><th className="num">Tax</th><th className="wrap">Suggestion</th><th className="wrap">Why</th>
+        </tr></thead>
+        <tbody>{groups.map(g => {
+          const n = g.rows.filter(r => sel.has(r)).length, isOpen = open.has(g.key);
+          const sg = g.suggest;
+          return [
+            <tr key={g.key} className="grp">
+              <td><input type="checkbox" aria-label={`Select group ${monthName(g.month)} ${g.code}`} checked={n === g.rows.length}
+                ref={el => { if (el) el.indeterminate = n > 0 && n < g.rows.length; }} onChange={e => toggle(g.rows, e.target.checked)} /></td>
+              <td><button className="link" onClick={() => setOpen(o => { const x = new Set(o); x.has(g.key) ? x.delete(g.key) : x.add(g.key); return x; })}>{isOpen ? '▾' : '▸'} {g.rows.length} row(s)</button></td>
+              <td>{monthName(g.month)}</td>
+              <td className="wrap" title={`code ${g.code}`}><small>{sectionName(g.code)}</small></td>
+              <td>{g.head === '0020' ? 'Company' : 'Non-company'}</td>
+              <td className="num">{inr(g.tax, 0)}</td>
+              <td className="wrap">{sg
+                ? <small>Link to <b>{label(sg.no)}</b>{sg.fromOther > 0.5
+                    ? <>, using Rs {inr(sg.fromOther, 0)} of its {sg.sections.map(sectionName).join(', ')} share - <i>needs your OK</i></>
+                    : ' - fits its own money for this return'}{sg.otherHead ? '; other major head (SOP rule 11, noted)' : ''}</small>
+                : <small className="bad">No challan can take these - add the missing challan, or check whether the deposit was short.</small>}</td>
+              <td className="wrap"><small>{g.why}</small></td>
+            </tr>,
+            ...(isOpen ? g.rows.map(r => {
+              const x = rowById.get(r)!;
+              return <tr key={`${g.key}-${r}`} className="sub">
+                <td><input type="checkbox" aria-label={`Select row ${r}`} checked={sel.has(r)} onChange={e => toggle([r], e.target.checked)} /></td>
+                <td>Row {r}</td><td>{x.dateDeducted}</td><td colSpan={2}>{x.name} <small className="muted">{x.pan}</small></td>
+                <td className="num">{inr(x.tax, 0)}</td><td colSpan={2} />
+              </tr>;
+            }) : []),
+          ];
+        })}</tbody>
+      </table></div>
+      {err && <p className="bad">{err}</p>}
+      {selRows.length > 0 && (
+        <div className="bulkbar">
+          <span><b>Selected:</b> {selRows.length} row(s) · Rs {inr(selTax, 0)}</span>
+          <button className="small" onClick={linkSuggested}>Link to the suggested challans</button>
+          <span className="muted">or link all to</span>
+          <select value={target} onChange={e => setTarget(e.target.value)} aria-label="Challan to link the selected rows to">
+            <option value="">-- choose a challan --</option>
+            {[...chById.values()].map(c => { const u = useById.get(c.no); return (
+              <option key={c.no} value={c.no}>{c.serial} {c.date} - this return left {inr(Math.max(0, u?.left ?? 0), 0)}{(u?.otherShare ?? 0) - (u?.approved ?? 0) > 0.5 ? `, other share ${inr((u!.otherShare - u!.approved), 0)}` : ''}</option>); })}
+          </select>
+          <button className="ghost small" onClick={linkTo}>Link</button>
+          <button className="link" onClick={() => { setSel(new Set()); setErr(''); }}>clear</button>
+        </div>)}
+      {confirm && (
+        <div className="modal" role="dialog" aria-label="Confirm linking">
+          <div className="modal-box">
+            <h3>Please confirm</h3>
+            <p>{confirm.label}.</p>
+            {confirm.approvals.length > 0 && <>
+              <p><b>This uses another return's money - only with your OK:</b></p>
+              <ul>{confirm.approvals.map(a => { const u = useById.get(a.no)!; return (
+                <li key={a.no}>Rs {inr(a.extra, 0)} of {label(a.no)}'s {u.otherSections.map(sectionName).join(', ')} share (Rs {inr(u.otherShare, 0)}) - leaves Rs {inr(u.otherShare - u.takenFromOther - a.extra, 0)} for that return.</li>); })}</ul>
+              <p className="muted">Check the salary register (or the other return): that return must still fit in what is left. Your approval is recorded on the challan.</p>
+            </>}
+            {confirm.otherHeadRows > 0 && <p className="warn">{confirm.otherHeadRows} row(s) go to a challan of the other major head - reported as deposited (SOP rule 11), with a note.</p>}
+            <div className="actions"><button className="ghost" onClick={() => setConfirm(null)}>Cancel</button>
+              <button onClick={() => { onLink(confirm); setConfirm(null); setSel(new Set()); }}>Yes, link and allow</button></div>
+          </div>
+        </div>)}
+    </div>
+  );
+}
+
 type Res = NonNullable<ReturnType<typeof matchChallans>>;
 /** One plain summary of what stands between the user and the return, with the next action. Display only - the rules are in the engine. */
 function StatusSummary({ res, challans, rows, options, unlinked, canApply, onSplit, onAllThis, onAllow }:
@@ -247,8 +400,9 @@ function StatusSummary({ res, challans, rows, options, unlinked, canApply, onSpl
         </li>}
         {unlinked > 0 && <li>
           <b>{unlinked} row(s), Rs {inr(res.shortTax, 0)} of tax, have no room in this return's money on the challans.</b>
-          {options.length > 0 ? <>{' '}The extra can come from another return's share (e.g. 392(7) salary) on one of these challans - only if you allow it.
-            Pick the challan whose other-return share was more than that return actually needed (check the salary register):
+          {options.length > 0 ? <>{' '}The extra can only come from another return's share (e.g. 392(7) salary), and only if you allow it.
+            <b> Fastest:</b> allow it on the one challan whose salary (or other) share was more than that return actually needed - check the salary register.
+            Or link the groups under "Rows that need a challan" below, with their suggestions.
             <ul className="plain">{options.map(o => {
               const u = useOf.get(o.no)!;
               return <li key={o.no}>

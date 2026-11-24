@@ -155,15 +155,16 @@ export function matchChallans(challans: ChallanIn[], rows: RowIn[], opts: { form
     if (!c) problems.push(`challan #${r.challanNo} is not on the Challans sheet`);
     else {
       if (c.date < `${monthKey(r.dateDeducted)}-01`) problems.push(`challan dated ${c.date} is before the month of deduction (${r.dateDeducted})`);
-      const mh = majorHeadFor(r.pan);
-      if (c.majorHead && mh && c.majorHead !== mh) problems.push(`payee needs major head ${mh}, challan is ${c.majorHead}`);
     }
     if (problems.length) {
       out.push({ row: r.row, challanNo: r.challanNo, status: 'exception', reason: problems.join('; ') });
       exceptions.push({ kind: 'given-mismatch', rows: [r.row], challans: c ? [c.no] : [], message: `Row ${r.row} (${r.name}): ${problems.join('; ')}.` });
     } else {
       use(c!, r.code, r.tax);
-      out.push({ row: r.row, challanNo: c!.no, status: 'given', reason: `challan #${c!.no} as typed in the workbook` });
+      // v2.3: a challan of the other major head is allowed, as deposited (SOP rule 11), with a note - as in the automatic split
+      const mh = majorHeadFor(r.pan);
+      const head = c!.majorHead && mh && c!.majorHead !== mh ? `; challan is major head ${c!.majorHead} although the payee needs ${mh} - reported as deposited (SOP rule 11), check` : '';
+      out.push({ row: r.row, challanNo: c!.no, status: 'given', reason: `challan #${c!.no} as linked in the workbook${head}` });
     }
   }
 
@@ -503,6 +504,49 @@ export function setChallanSplit(data: ArrayBuffer | Uint8Array, challanNo: numbe
  * its other-return share so that every row gets a challan, and what that does to interest on late deposit.
  * Nothing is applied - the user chooses (the tool cannot know which challan's split was wrong).
  */
+/**
+ * Rows left without a challan, in groups (month, payee major head, section), each with why and a
+ * suggested challan worked out by the rules: dated on/after the group's latest deduction, split known,
+ * enough room once its other-return share is counted; preferring a challan that needs none of another
+ * return's money, then the payee's major head, then the least other-return money, then the earliest.
+ * Groups are taken in date order and each suggestion uses up what it takes, so suggestions add up.
+ * Nothing is applied: using another return's share needs the user's OK (fromOther).
+ */
+export interface OpenGroup {
+  key: string; month: string; code: string; head: string; rows: number[]; tax: number; latest: Ymd; why: string;
+  suggest: { no: number; fromOther: number; sections: string[]; otherHead: boolean } | null;
+}
+export function openGroups(challans: ChallanIn[], rows: RowIn[], result: MatchResult): OpenGroup[] {
+  const byRow = new Map(rows.map(r => [r.row, r]));
+  const open = result.rows.filter(m => m.status === 'exception' && m.challanNo === null).map(m => byRow.get(m.row)!).filter(Boolean);
+  const g = new Map<string, RowIn[]>();
+  for (const r of open) { const k = `${monthKey(r.dateDeducted)}|${majorHeadFor(r.pan)}|${r.code}`; g.set(k, [...(g.get(k) ?? []), r]); }
+  const use = new Map(result.challans.map(u => [u.no, u]));
+  const left = new Map(result.challans.map(u => [u.no, Math.max(0, u.left)]));
+  const avail = new Map(result.challans.map(u => [u.no, Math.max(0, r2(u.otherShare - u.approved))]));
+  const groups = [...g.entries()].map(([key, rs]) => ({ key, rs, tax: r2(rs.reduce((a, r) => a + r.tax, 0)), latest: rs.map(r => r.dateDeducted).sort().at(-1)! }))
+    .sort((a, b) => a.latest.localeCompare(b.latest) || b.tax - a.tax);
+  return groups.map(({ key, rs, tax, latest }) => {
+    const [month, head, code] = key.split('|');
+    const dated = challans.filter(c => c.date >= latest && use.get(c.no)?.limitFrom === 'split');
+    const cands = dated.filter(c => (left.get(c.no) ?? 0) + (avail.get(c.no) ?? 0) + 0.5 >= tax).map(c => {
+      const fromOther = r2(Math.max(0, tax - (left.get(c.no) ?? 0)));
+      return { c, fromOther, otherHead: !!(c.majorHead && head && c.majorHead !== head) };
+    }).sort((a, b) => Number(a.fromOther > 0) - Number(b.fromOther > 0) || Number(a.otherHead) - Number(b.otherHead) || a.fromOther - b.fromOther || a.c.date.localeCompare(b.c.date));
+    const best = cands[0];
+    if (best) {
+      left.set(best.c.no, r2(Math.max(0, (left.get(best.c.no) ?? 0) - tax)));
+      avail.set(best.c.no, r2((avail.get(best.c.no) ?? 0) - best.fromOther));
+    }
+    const mostLeft = Math.max(0, ...dated.map(c => use.get(c.no)?.left ?? 0));
+    const why = !challans.some(c => c.date >= latest)
+      ? `no challan dated on or after ${latest}`
+      : `this return's own money on challans dated on or after ${latest} is used up (most left Rs ${inr(r2(mostLeft))})`;
+    return { key, month, code, head, rows: rs.map(r => r.row), tax, latest, why,
+      suggest: best ? { no: best.c.no, fromOther: best.fromOther, sections: use.get(best.c.no)?.otherSections ?? [], otherHead: best.otherHead } : null };
+  });
+}
+
 export interface ApprovalOption { no: number; amount: number; clearsAll: boolean; openAfter: number; interestShort: number }
 export function approvalOptions(challans: ChallanIn[], rows: RowIn[], opts: { form?: Form } = {}): ApprovalOption[] {
   const base = matchChallans(challans, rows, opts);

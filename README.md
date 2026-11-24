@@ -2,13 +2,13 @@
 
 Web app that turns a filled input workbook into a Protean (NSDL) e-TDS/TCS return text file for Forms 138, 140 and 143: section codes worked out from the working, challans matched and split automatically, a review before the FVU, and FVU results explained row by row. Everything runs in the browser; client files are never uploaded.
 
-**Engine fingerprint for this release: `dd9bef9c8dc8`** — the app's footer must show the same value and "self-test passed". If it does not, the deployment is not running the tested engine.
+**Engine fingerprint for this release: `2a880b7cc729`** — the app's footer must show the same value and "self-test passed". If it does not, the deployment is not running the tested engine.
 
 ## Deploy with Google AI Studio (Build)
 
 1. In AI Studio → Build, click **+** in the prompt box → **Import from GitHub**, connect your GitHub account and choose `viratjoneja/tds-agent-web`.
 2. Deploy (Cloud Run) as usual. For the optional AI buttons, set the secret **`GEMINI_API_KEY`** (a billing-enabled key, so Google does not use the data for training). Optional `GEMINI_MODEL` (default `gemini-flash-latest`).
-3. Open the app and check the footer: engine `dd9bef9c8dc8`, **self-test passed**. Quick test: a workbook whose Tax column is `=Amount*Rate` (no /100) must stop at step 4 with "Tax looks like Amount x Rate % without dividing by 100".
+3. Open the app and check the footer: engine `2a880b7cc729`, **self-test passed**. Quick test: a workbook whose Tax column is `=Amount*Rate` (no /100) must stop at step 4 with "Tax looks like Amount x Rate % without dividing by 100".
 4. Use AI Studio only for look and feel. Do not let it change the engine files (listed in `engine-files.mjs`); see `AGENTS.md`. After each new release here, pull the latest from GitHub in AI Studio's GitHub settings.
 
 ## Office portal (tools.ykjoneja.com/tds)
@@ -17,7 +17,7 @@ On branch `claude/office-portal` the app runs as the Cloud Run service `tds` beh
 - Only signed-in `@ykjoneja.com` Google Workspace accounts can use it (`src/app/AuthGate.tsx`); `/api/gemini` checks the login token on the server (`auth.mjs`).
 - Each downloaded return adds one line to the office run log (deductor, TAN, form, period, totals - no workbook or deductee rows) (`src/app/office.ts`).
 - `BASE_PATH` (default `/tds`) sets where it is served; `BASE_PATH=/` serves it at the root as before.
-- Engine files are the released ones: fingerprint `dd9bef9c8dc8` (v2.1.0).
+- Engine files are the released ones: fingerprint `2a880b7cc729` (v2.1.0).
 
 ## Run it anywhere else (Cloud Run, a VM, your PC)
 
@@ -67,4 +67,5 @@ Node 22.6 or later: `npm install`, `npm test` (engine), `npm run typecheck`, `np
 | 6.3 | Challans step: one summary of what blocks the return and the next action (shortfall, challan keeping salary money); short, foldable decision cards; compact tables | done (2.1.1) |
 | 6.4 | Firm set-off rule: every challan needs its split by section (receipt, or entered on screen - missing split blocks); this return's sections are one pool across sections, months and top-ups; another return's share (e.g. 1002 salary) only up to what the user allows, with the smallest amount offered per challan; set-off download with the balance left for other returns; replaces 6.2's "Used by other forms" | done (2.2.0) |
 | 6.5 | Challans step shows sections by name (e.g. 392(7) Salary - private employee) instead of codes: split, split editor drop-down, offers, notes, rows, set-off download | done (2.2.1) |
+| 6.6 | Rows without a challan shown in groups (month, section, payee type) with why and a suggested challan worked out by the rules; tick groups or rows and link in bulk (to the suggestions or one chosen challan), one confirmation for any use of another return's share, undo; linked rows on the other major head allowed with an SOP rule 11 note | done (2.3.0) |
 | 5 | Tests on every rule; local checks on real Q2 cases | ongoing |
