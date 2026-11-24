@@ -5,6 +5,7 @@ import { applyProposals, checkProposals, geminiExceptionRequest, maskedPayload, 
 import { askGemini } from './ai.ts';
 import { clearChallans, download, inr, readBytes, reviewWorkbook, typedChallanLinks } from './util.ts';
 import { Table } from './Table.tsx';
+import { sectionChoices, sectionName, sectionRef, withSectionNames } from './sectionNames.ts';
 import type { StepProps } from './App.tsx';
 import type { Form } from '../protean.ts';
 
@@ -43,7 +44,7 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
   const allow = (no: number, extra: number) => {
     const c = chById.get(no)!;
     change(() => setApproved(work, no, Math.round(((Number(c.approved) || 0) + extra) * 100) / 100),
-      `Allowed Rs ${inr(extra, 0)} of challan #${no}'s ${useById.get(no)?.otherSections.join(', ')} share for this return (your approval is recorded on the challan).`);
+      `Allowed Rs ${inr(extra, 0)} of challan #${no}'s ${useById.get(no)?.otherSections.map(sectionName).join(', ')} share for this return (your approval is recorded on the challan).`);
   };
   const setAllowedText = (no: number, text: string) => {
     const t = text.replace(/,/g, '').trim();
@@ -57,8 +58,9 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
   const setOffSheet = () => reviewWorkbook({ 'Challan set-off': m.challans.map(c => {
     const u = useById.get(c.no)!;
     return { 'Challan #': c.no, BSR: c.bsr, Serial: c.serial, Date: c.date, 'Major head': c.majorHead, Tax: c.tax,
-      Split: c.breakup ? formatBreakup(c.breakup) : 'MISSING',
-      "This return's sections": u.pool, "Other returns' sections": u.otherSections.join(', '), "Other returns' share": u.otherShare,
+      'Split by section': c.breakup ? Object.entries(c.breakup).map(([k, v]) => `${sectionName(k)}${/^\d{4}$/.test(k) ? ` (${k})` : ''}: ${v}`).join('; ') : 'MISSING',
+      'Split (codes)': c.breakup ? formatBreakup(c.breakup) : '',
+      "This return's money": u.pool, "Other returns' sections": u.otherSections.map(k => `${sectionName(k)}${/^\d{4}$/.test(k) ? ` (${k})` : ''}`).join('; '), "Other returns' share": u.otherShare,
       'Allowed by you from other share': u.approved, 'Used by this return': u.usedHere, 'Of which from other share': u.takenFromOther,
       'Left for this return': u.left, 'Left for other returns': Math.round((u.otherShare - u.takenFromOther) * 100) / 100 };
   }) });
@@ -89,7 +91,7 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
             { key: 'tax', label: 'Tax', num: true },
             { key: 'bar', label: 'Set-off', value: c => useById.get(c.no)?.usedHere ?? 0, render: c => <SetOffBar u={useById.get(c.no)!} /> },
             { key: 'split', label: 'Split by section', value: c => (c.breakup ? formatBreakup(c.breakup) : ''), render: c => (
-              <span className="split">{c.breakup ? <small>{splitText(c.breakup)}</small> : <b className="bad">missing</b>}
+              <span className="split">{c.breakup ? <SplitList b={c.breakup} /> : <b className="bad">missing</b>}
                 <button className="link" onClick={() => setEditing(c.no)}>{c.breakup ? 'edit' : 'enter'}</button></span>) },
             { key: 'pool', label: 'This return', num: true, value: c => useById.get(c.no)?.pool ?? 0 },
             { key: 'other', label: 'Other returns', num: true, value: c => useById.get(c.no)?.otherShare ?? 0 },
@@ -100,13 +102,13 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
             { key: 'used', label: 'Used here', num: true, value: c => useById.get(c.no)?.usedHere ?? 0 },
             { key: 'left', label: 'Left', num: true, value: c => useById.get(c.no)?.left ?? 0 },
             { key: 'idue', label: 'Interest due / paid', value: c => useById.get(c.no)?.interestDue ?? 0, render: c => <small>{inr(useById.get(c.no)?.interestDue ?? 0, 0)} / {inr(c.interest, 0)}</small> },
-            { key: 'notes', label: 'Notes', wrap: true, value: c => (useById.get(c.no)?.notes ?? []).join('; ') },
+            { key: 'notes', label: 'Notes', wrap: true, value: c => withSectionNames((useById.get(c.no)?.notes ?? []).join('; ')) },
           ]} />
 
         {res.exceptions.length > 0 && <>
           <details className="points" open={res.exceptions.length <= 3}>
             <summary><h3>Points needing a decision ({res.exceptions.length})</h3></summary>
-            <div className="cards">{res.exceptions.map((e, i) => <div key={i} className={`point ${e.kind}`}><b>{e.kind.replace('-', ' ')}</b> {e.message}</div>)}</div>
+            <div className="cards">{res.exceptions.map((e, i) => <div key={i} className={`point ${e.kind}`}><b>{e.kind.replace('-', ' ')}</b> {withSectionNames(e.message)}</div>)}</div>
           </details>
           {ai && unlinked > 0 && <AiProposals challans={m.challans} rows={rowsIn} res={res} form={s.form} onApply={links => setOverrides(o => ({ ...o, ...links }))} />}
         </>}
@@ -119,7 +121,7 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
             { key: 'row', label: 'Row' },
             { key: 'name', label: 'Name', value: r => rowById.get(r.row)?.name },
             { key: 'pan', label: 'PAN', value: r => rowById.get(r.row)?.pan },
-            { key: 'code', label: 'Section', value: r => rowById.get(r.row)?.code },
+            { key: 'code', label: 'Section', value: r => sectionRef(rowById.get(r.row)?.code ?? ''), render: r => <span title={`${sectionName(rowById.get(r.row)?.code ?? '')} (code ${rowById.get(r.row)?.code})`}>{sectionRef(rowById.get(r.row)?.code ?? '')}</span> },
             { key: 'date', label: 'Deducted', value: r => rowById.get(r.row)?.dateDeducted },
             { key: 'tax', label: 'Tax', num: true, value: r => rowById.get(r.row)?.tax },
             { key: 'challan', label: 'Challan', value: r => r.challanNo ?? '', render: r => (
@@ -129,7 +131,7 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
                   <option value="">-- choose --</option>
                   {m.challans.map(c => <option key={c.no} value={c.no}>#{c.no} {c.serial} {c.date} (left for this return {inr(useById.get(c.no)?.left ?? 0, 0)})</option>)}
                 </select>) : <>#{r.challanNo} {chById.get(r.challanNo!)?.serial} {chById.get(r.challanNo!)?.date}</>) },
-            { key: 'reason', label: 'Why', wrap: true, render: r => <small>{r.reason}</small> },
+            { key: 'reason', label: 'Why', wrap: true, render: r => <small>{withSectionNames(r.reason)}</small> },
           ]} /> : <p className="muted">No rows need attention.</p>}
       </>}
 
@@ -147,8 +149,11 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
   );
 }
 
-const SECTION_NAME: Record<string, string> = { THIS: 'this return', OTHER: 'other returns' };
-const splitText = (b: Record<string, number>) => Object.entries(b).map(([k, v]) => `${SECTION_NAME[k] ?? k} ${inr(v, 0)}`).join(' · ');
+/** A challan's split, one section per line: section reference and description, amount; the code on hover. */
+function SplitList({ b }: { b: Record<string, number> }) {
+  return <ul className="split-list">{Object.entries(b).map(([k, v]) => (
+    <li key={k} title={/^\d{4}$/.test(k) ? `code ${k}` : ''}><span>{sectionName(k)}</span> <b>{inr(v, 0)}</b></li>))}</ul>;
+}
 
 /** Bar: other returns' share kept | used by this return | left for this return. */
 function SetOffBar({ u }: { u: ChallanUse }) {
@@ -169,6 +174,7 @@ function SplitEditor({ challan, form, codesHere, onCancel, onSave }:
   { challan: ChallanIn; form: string; codesHere: string[]; onCancel: () => void; onSave: (b: Record<string, number>) => string | null }) {
   const start = challan.breakup ? Object.entries(challan.breakup).map(([code, v]) => ({ code, amount: String(v) })) : [{ code: codesHere[0] ?? '', amount: '' }];
   const [lines, setLines] = useState(start);
+  const groups = useMemo(() => { const m = new Map<string, ReturnType<typeof sectionChoices>>(); for (const x of sectionChoices(form)) m.set(x.group, [...(m.get(x.group) ?? []), x]); return [...m.entries()]; }, [form]);
   const [err, setErr] = useState('');
   const sum = lines.reduce((a, l) => a + (Number(l.amount.replace(/,/g, '')) || 0), 0);
   const diff = Math.round((challan.tax - sum) * 100) / 100;
@@ -177,8 +183,8 @@ function SplitEditor({ challan, form, codesHere, onCancel, onSave }:
     for (const l of lines) {
       const code = l.code.trim().toUpperCase(), amt = Number(l.amount.replace(/,/g, ''));
       if (!code && !l.amount.trim()) continue;
-      if (!/^\d{4}$|^THIS$|^OTHER$/.test(code)) { setErr(`"${l.code}" is not a section code (4 digits, e.g. 1002 salary, 1023)`); return; }
-      if (!(amt >= 0)) { setErr(`Amount for ${code} is not a number`); return; }
+      if (!/^\d{4}$|^THIS$|^OTHER$/.test(code)) { setErr(`Line ${lines.indexOf(l) + 1}: choose the section`); return; }
+      if (!(amt >= 0)) { setErr(`Amount for ${sectionName(code)} is not a number`); return; }
       out[code] = (out[code] ?? 0) + amt;
     }
     setErr(onSave(out) ?? '');
@@ -192,11 +198,16 @@ function SplitEditor({ challan, form, codesHere, onCancel, onSave }:
           <button className="ghost" onClick={() => setLines([{ code: 'THIS', amount: String(challan.tax) }])}>All for this return</button>
           <button className="ghost" onClick={() => setLines([{ code: '1002', amount: '' }, ...codesHere.map(code => ({ code, amount: '' }))])}>Salary + this return's sections</button>
         </div>
-        <table className="split-lines"><thead><tr><th>Section code</th><th className="num">Amount (Rs)</th><th /></tr></thead>
+        <table className="split-lines"><thead><tr><th>Section</th><th className="num">Amount (Rs)</th><th /></tr></thead>
           <tbody>{lines.map((l, i) => (
             <tr key={i}>
-              <td><input className="code" value={l.code} placeholder="1023" aria-label={`Section code, line ${i + 1}`}
-                onChange={e => setLines(ls => ls.map((x, j) => (j === i ? { ...x, code: e.target.value } : x)))} /> <small className="muted">{SECTION_NAME[l.code.trim().toUpperCase()] ?? ''}</small></td>
+              <td><select value={l.code} aria-label={`Section, line ${i + 1}`}
+                onChange={e => setLines(ls => ls.map((x, j) => (j === i ? { ...x, code: e.target.value } : x)))}>
+                <option value="">-- choose the section --</option>
+                <option value="THIS">This return (any of its sections)</option>
+                {groups.map(([g, items]) => <optgroup key={g} label={g}>{items.map(x => <option key={x.code} value={x.code}>{x.label}</option>)}</optgroup>)}
+                <option value="OTHER">Other returns (not split further)</option>
+              </select></td>
               <td className="num"><input value={l.amount} inputMode="decimal" aria-label={`Amount, line ${i + 1}`}
                 onChange={e => setLines(ls => ls.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x)))} /></td>
               <td><button className="link" onClick={() => setLines(ls => ls.filter((_, j) => j !== i))} aria-label={`Remove line ${i + 1}`}>remove</button></td>
@@ -236,13 +247,13 @@ function StatusSummary({ res, challans, rows, options, unlinked, canApply, onSpl
         </li>}
         {unlinked > 0 && <li>
           <b>{unlinked} row(s), Rs {inr(res.shortTax, 0)} of tax, have no room in this return's money on the challans.</b>
-          {options.length > 0 ? <>{' '}The extra can come from another return's share (e.g. salary, 1002) on one of these challans - only if you allow it.
+          {options.length > 0 ? <>{' '}The extra can come from another return's share (e.g. 392(7) salary) on one of these challans - only if you allow it.
             Pick the challan whose other-return share was more than that return actually needed (check the salary register):
             <ul className="plain">{options.map(o => {
               const u = useOf.get(o.no)!;
               return <li key={o.no}>
                 <button className="ghost small" onClick={() => onAllow(o.no, o.amount)}>Allow Rs {inr(o.amount, 0)} from {label(o.no)}</button>{' '}
-                <small>{u.otherSections.join(', ')} share Rs {inr(u.otherShare, 0)} → leaves Rs {inr(u.otherShare - u.approved - o.amount, 0)} for that return; {o.clearsAll ? 'all rows linked' : `${o.openAfter} row(s) still open`}{o.interestShort > 0 ? `; interest short about Rs ${inr(o.interestShort, 0)} in total` : ''}</small>
+                <small>{u.otherSections.map(sectionName).join(', ')} share Rs {inr(u.otherShare, 0)} → leaves Rs {inr(u.otherShare - u.approved - o.amount, 0)} for that return; {o.clearsAll ? 'all rows linked' : `${o.openAfter} row(s) still open`}{o.interestShort > 0 ? `; interest short about Rs ${inr(o.interestShort, 0)} in total` : ''}</small>
               </li>;
             })}</ul></>
             : <> No challan has another return's share to spare after these rows' dates. A challan may be missing (upload its receipt), or the deposit was short - choose a challan for these rows below.</>}
