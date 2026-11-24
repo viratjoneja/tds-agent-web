@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 export const ENGINE_FILES = [
   'protean.ts', 'inputWorkbook.ts', 'review.ts', 'template_columns.json',          // frozen core (tds-agent 2.6.0)
   'csi.ts', 'fvuResult.ts', 'sectionCodes.ts', 'sectionMap.json',
-  'challanMatch.ts', 'challanPdf.ts', 'aiExceptions.ts',
+  'challanMatch.ts', 'challanPdf.ts', 'aiExceptions.ts', 'dataChecks.ts',
 ];
 
 export function engineHash(root = dirname(fileURLToPath(import.meta.url))) {

@@ -5,9 +5,9 @@ This app prepares statutory tax return files. The engine is tested byte-for-byte
 ## Never change the engine
 Do not edit, reformat, rename, move or "improve" these files - not even whitespace or imports:
 `src/protean.ts`, `src/inputWorkbook.ts`, `src/review.ts`, `src/template_columns.json`, `src/csi.ts`, `src/fvuResult.ts`,
-`src/sectionCodes.ts`, `src/sectionMap.json`, `src/challanMatch.ts`, `src/challanPdf.ts`, `src/aiExceptions.ts`,
+`src/sectionCodes.ts`, `src/sectionMap.json`, `src/challanMatch.ts`, `src/challanPdf.ts`, `src/aiExceptions.ts`, `src/dataChecks.ts`,
 `engine-files.mjs`, `test/**`.
-The footer shows a fingerprint of them (expected `2a880b7cc729` for this release) and a self-test; if either changes, the app blocks downloads.
+The footer shows a fingerprint of them (expected `df48c9606d51` for this release) and a self-test; if either changes, the app blocks downloads.
 Do not re-implement any engine logic in the UI (section codes, challan matching, return building, checks). Call the engine.
 
 ## You may change

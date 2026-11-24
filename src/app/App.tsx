@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AGENT_VERSION, TARGET_FVU, checkFileName, deductorFromFvu, type Deductor, type Form } from '../protean.ts';
 import { readInputWorkbook } from '../inputWorkbook.ts';
 import { parseCsi, type CsiInfo } from '../csi.ts';
@@ -7,6 +7,8 @@ import { runSelfTest, type SelfTest } from './selfTest.ts';
 import { aiAvailable } from './ai.ts';
 import { download, readBytes, readLatin1 } from './util.ts';
 import { normaliseRates, roundTax } from './rates.ts';
+import { checkUpload } from '../dataChecks.ts';
+import { DataChecks } from './Checks.tsx';
 import { SectionsStep } from './Sections.tsx';
 import { ChallansStep } from './Challans.tsx';
 import { ReviewStep, DownloadStep, FvuStep } from './Review.tsx';
@@ -22,15 +24,17 @@ export interface Session {
   rrr: string; fileName: string;
   csi: { info: CsiInfo; bytes: Uint8Array } | null;
   withSections: Uint8Array | null;                   // after the Section codes step
-  challanWork: Uint8Array | null;                    // the Challans step's workbook (receipts, splits, approvals) - kept when moving between steps
+  challanWork: Uint8Array | null;
+  setoff: { challans: import('../challanMatch.ts').ChallanIn[]; rows: import('../challanMatch.ts').RowIn[]; result: import('../challanMatch.ts').MatchResult } | null; // how each row was matched, kept for the report                    // the Challans step's workbook (receipts, splits, approvals) - kept when moving between steps
   linked: Uint8Array | null;                         // after the Challans step
   lines: string[] | null;                            // built return
+  sharedOk?: boolean;                                // user confirmed the balances left on shared challans
 }
 export interface StepProps { s: Session; set: (p: Partial<Session>) => void; next: () => void; ai: boolean; selfTest: SelfTest | null }
 
 const STEPS = ['Setup', 'Upload', 'Section codes', 'Challans', 'Review', 'Download', 'FVU results'];
 const fresh = (): Session => ({ form: '140', fy: 2026, quarter: 2, workbook: null, fvu: null, deductor: null, rrr: '', fileName: '', csi: null,
-  withSections: null, challanWork: null, linked: null, lines: null });
+  withSections: null, challanWork: null, setoff: null, linked: null, lines: null });
 
 export function App() {
   const [s, setS] = useState<Session>(fresh);
@@ -43,10 +47,10 @@ export function App() {
   // a change to an earlier step throws away everything built after it
   const set = (p: Partial<Session>) => setS(old => {
     const n = { ...old, ...p };
-    if ('form' in p || 'fy' in p || 'quarter' in p || 'workbook' in p || 'fvu' in p) Object.assign(n, { withSections: null, challanWork: null, linked: null, lines: null });
-    if ('withSections' in p) Object.assign(n, { challanWork: null, linked: null, lines: null });
-    if ('challanWork' in p) Object.assign(n, { linked: null, lines: null });
-    if ('linked' in p || 'rrr' in p) n.lines = null;
+    if ('form' in p || 'fy' in p || 'quarter' in p || 'workbook' in p || 'fvu' in p) Object.assign(n, { withSections: null, challanWork: null, setoff: null, linked: null, lines: null });
+    if ('withSections' in p) Object.assign(n, { challanWork: null, setoff: null, linked: null, lines: null });
+    if ('challanWork' in p) Object.assign(n, { setoff: null, linked: null, lines: null });
+    if ('linked' in p || 'rrr' in p) { n.lines = null; n.sharedOk = false; }
     return n;
   });
   const reached = [true, true, !!s.workbook && !!s.deductor, !!s.withSections, !!s.linked, !!s.lines, !!s.lines];
@@ -145,6 +149,9 @@ function UploadStep({ s, set, next }: StepProps) {
   const [note, setNote] = useState<string[]>([]);
   const rrrOk = s.rrr === '' || /^\d{15}$/.test(s.rrr);
   const nameErr = s.fileName ? checkFileName(s.fileName) : null;
+  // v2.4: the data checks run as soon as the workbook is in, so problems are fixed before section codes and challans
+  const checks = useMemo(() => { try { return s.workbook ? checkUpload(s.workbook.bytes, s.fy, s.quarter) : null; } catch { return null; } }, [s.workbook, s.fy, s.quarter]);
+  const blocked = !!checks && checks.errors.length > 0;
 
   const onWorkbook = async (f?: File) => {
     if (!f) return;
@@ -209,8 +216,13 @@ function UploadStep({ s, set, next }: StepProps) {
       {[...err].map(m => <p key={m} className="bad">{m}</p>)}
       {note.map(m => <p key={m} className="warn">{m}</p>)}
       {s.rrr === '' && s.workbook && <p className="warn">No RRR number: the file will say no earlier statement was filed for this form.</p>}
+      {checks && <><h3>Data checks</h3><DataChecks r={checks} onDownload={async () => {
+        const { checksReport } = await import('./report.ts');
+        download(await checksReport(checks, { file: s.workbook!.name, form: s.form, fy: s.fy, quarter: s.quarter }), `data_checks_${s.form}_Q${s.quarter}.xlsx`);
+      }} /></>}
       <div className="actions">
-        <button disabled={!s.workbook || !s.deductor || !rrrOk || !!nameErr || !s.fileName} onClick={next}>Next: section codes</button>
+        {blocked && <span className="bad">Fix the rows above in the workbook and upload it again.</span>}
+        <button disabled={!s.workbook || !s.deductor || !rrrOk || !!nameErr || !s.fileName || blocked} onClick={next}>Next: section codes</button>
       </div>
     </section>
   );

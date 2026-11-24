@@ -3,7 +3,8 @@ import { applyChallanMatches, approvalOptions, formatBreakup, matchChallans, ope
 import { addChallansToWorkbook, fromGemini, geminiChallanRequest, maskReceiptText, readChallanPdfs, type ChallanReceipt, type ReadResult } from '../challanPdf.ts';
 import { applyProposals, checkProposals, geminiExceptionRequest, maskedPayload, type CheckedProposal } from '../aiExceptions.ts';
 import { askGemini } from './ai.ts';
-import { clearChallans, download, inr, readBytes, reviewWorkbook, typedChallanLinks } from './util.ts';
+import { clearChallans, download, inr, readBytes, typedChallanLinks } from './util.ts';
+import { checkUpload } from '../dataChecks.ts';
 import { Table } from './Table.tsx';
 import { sectionChoices, sectionName, sectionRef, withSectionNames } from './sectionNames.ts';
 import type { StepProps } from './App.tsx';
@@ -55,16 +56,12 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
     change(() => setApproved(work, no, v));
   };
   const linkedBytes = () => applyChallanMatches(work, res!.rows.filter(r => r.challanNo !== null).map(r => ({ row: r.row, challanNo: r.challanNo! })));
-  const apply = () => { set({ linked: linkedBytes() }); next(); };
-  const setOffSheet = () => reviewWorkbook({ 'Challan set-off': m.challans.map(c => {
-    const u = useById.get(c.no)!;
-    return { 'Challan #': c.no, BSR: c.bsr, Serial: c.serial, Date: c.date, 'Major head': c.majorHead, Tax: c.tax,
-      'Split by section': c.breakup ? Object.entries(c.breakup).map(([k, v]) => `${sectionName(k)}${/^\d{4}$/.test(k) ? ` (${k})` : ''}: ${v}`).join('; ') : 'MISSING',
-      'Split (codes)': c.breakup ? formatBreakup(c.breakup) : '',
-      "This return's money": u.pool, "Other returns' sections": u.otherSections.map(k => `${sectionName(k)}${/^\d{4}$/.test(k) ? ` (${k})` : ''}`).join('; '), "Other returns' share": u.otherShare,
-      'Allowed by you from other share': u.approved, 'Used by this return': u.usedHere, 'Of which from other share': u.takenFromOther,
-      'Left for this return': u.left, 'Left for other returns': Math.round((u.otherShare - u.takenFromOther) * 100) / 100 };
-  }) });
+  const apply = () => { set({ linked: linkedBytes(), setoff: { challans: m.challans, rows: rowsIn, result: res! } }); next(); };
+  const setOffReport = async () => {
+    const { setoffReport } = await import('./report.ts');
+    return setoffReport({ meta: { deductor: s.deductor?.entity.name, tan: s.deductor?.tan, form: s.form, fy: s.fy, quarter: s.quarter, file: s.workbook?.name },
+      setoff: { challans: m.challans, rows: rowsIn, result: res! }, workbook: work, checks: s.workbook ? checkUpload(s.workbook.bytes, s.fy, s.quarter) : null });
+  };
   const groups = useMemo(() => (res ? openGroups(m.challans, rowsIn, res) : []), [res, m, rowsIn]);
   const points = res ? res.exceptions.filter(e => e.kind !== 'too-large' && e.kind !== 'no-challan') : [];
   // link rows (written into the workbook's Challan # column) and record any approval of another return's share
@@ -160,7 +157,7 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
           onSave={split => { try { setWork(setChallanSplit(work, editing, split)); setMsg([{ cls: 'ok', text: `Challan #${editing}: split saved.` }]); setEditing(null); } catch (e) { return (e as Error).message; } return null; }} />)}
 
       <div className="actions">
-        {res && <button className="ghost" onClick={() => download(setOffSheet(), `challan_setoff_${s.form}_Q${s.quarter}.xlsx`)}>Download challan set-off (balance left for other returns)</button>}
+        {res && <button className="ghost" onClick={async () => download(await setOffReport(), `challan_setoff_${s.form}_Q${s.quarter}.xlsx`)}>Download the set-off report (Excel)</button>}
         <button className="ghost" disabled={!canApply} onClick={() => download(linkedBytes(), `linked_${s.workbook!.name.replace(/\.xls$/i, '.xlsx')}`)}>Download workbook with challan links</button>
         <button disabled={!canApply} onClick={apply}>{unlinked ? `${unlinked} row(s) still need a challan` : blocking.length ? 'Settle the challans first' : 'Apply challan links and build the return'}</button>
       </div>
