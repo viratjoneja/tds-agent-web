@@ -16,6 +16,7 @@
  * New module — does not change the frozen core.
  */
 import { matchChallans, type ChallanIn, type MatchResult, type RowIn } from './challanMatch.ts';
+import type { Form } from './protean.ts';
 
 const payeeType = (pan: string) => (/^[A-Z]{3}C/.test(pan) ? 'company' : 'non-company');
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -137,10 +138,10 @@ export function checkProposals(json: string, challans: ChallanIn[], rows: RowIn[
  * as typed-in challan numbers, then run the rules again. Returns the new result and the links to write
  * with applyChallanMatches().
  */
-export function applyProposals(challans: ChallanIn[], rows: RowIn[], result: MatchResult, approved: CheckedProposal[]) {
+export function applyProposals(challans: ChallanIn[], rows: RowIn[], result: MatchResult, approved: CheckedProposal[], form?: Form) {
   const link = new Map<number, number>();
   for (const r of result.rows) if (r.challanNo && r.status !== 'exception') link.set(r.row, r.challanNo);
   for (const p of approved) if (p.verdict !== 'rejected') for (const id of p.rows) link.set(id, p.challan);
-  const again = matchChallans(challans, rows.map(r => ({ ...r, challanNo: link.get(r.row) ?? null })));
+  const again = matchChallans(challans, rows.map(r => ({ ...r, challanNo: link.get(r.row) ?? null })), { form });
   return { result: again, links: again.rows.filter(r => r.challanNo).map(r => ({ row: r.row, challanNo: r.challanNo! })) };
 }

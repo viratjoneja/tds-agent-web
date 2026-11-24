@@ -17,12 +17,13 @@
  *  A month's rows (per major head) go to its challan; rows that do not fit are split off to other
  *  challans with money left (top-up challans first). Section breakups only reserve the share of
  *  sections this return does not have (e.g. 1002 salary); otherwise a difference is a note.
- * Strict limit (v2.1): the money of a challan this return may use is
- *    its tax - "Used by other forms" (what the other return, e.g. 24Q salary, claims from it), if given;
- *    else its tax - the receipt's share for sections this return has no rows for (e.g. 1002 salary);
- *    else the whole tax - and then, if money is left over, the tool asks (split-unknown) instead of
- *    assuming the challan pays only this return. The limit is never exceeded: money kept for another
- *    return is never borrowed. Rows that do not fit are a decision, with a hint where the split may be wrong.
+ * Set-off rule (v2.2, the firm's rule): every challan needs its split by section - from the challan
+ *  receipt, or typed in (a challan without one is flagged split-missing and blocks the return).
+ *  The sections that belong to this form (section map) are this return's money, used across
+ *  sections, months and top-ups. The share of sections of other forms (e.g. 1002 salary, 1057, 1073)
+ *  is used only up to what the user has approved ("Allowed from other returns' share"); when rows are
+ *  short, the result lists the challans whose other-return share could cover them (offers) - the
+ *  tool never takes it by itself. A challan is never used beyond this limit, not even by Re 1.
  *  Overflow rows go to challans of the same major head first - top-up challans (they carry the interest)
  *  before other monthly challans - and to the other major head only as a last resort (SOP rule 11, noted).
  * Never decided here (returned as exceptions for a person, or for the Phase 4 AI to propose):
@@ -33,18 +34,18 @@
  */
 import * as XLSX from 'xlsx';
 import type { Form, Ymd } from './protean.ts';
-import { makeTemplateWithSection } from './sectionCodes.ts';
+import { SECTION_MAP, makeTemplateWithSection } from './sectionCodes.ts';
 
 export const MAJOR_HEAD_COLUMN = 'Major head (0020 company / 0021 non-company)';
 export const BREAKUP_COLUMN = 'Section breakup (code=amount; ...)';
-export const OTHER_FORMS_COLUMN = 'Used by other forms (e.g. 24Q salary)';
+export const APPROVED_COLUMN = "Allowed from other returns' share (approved)";
 
 export interface ChallanIn {
   no: number; bsr: string; serial: string; date: Ymd;
   tax: number; interest: number; fee: number; others: number;
   majorHead: string;                          // '0020' | '0021' | '' (not given)
-  breakup: Record<string, number> | null;     // section code -> tax, if given
-  otherForms?: number | null;                 // amount of this challan claimed by other returns (e.g. 24Q), if known
+  breakup: Record<string, number> | null;     // section code (or THIS / OTHER) -> tax, if given
+  approved?: number | null;                   // part of the other returns' share the user allowed this return to use
 }
 export interface RowIn {
   row: number; pan: string; name: string; code: string; dateDeducted: Ymd; tax: number;
@@ -53,16 +54,27 @@ export interface RowIn {
 export interface RowMatch { row: number; challanNo: number | null; status: 'given' | 'matched' | 'exception'; reason: string }
 export interface ChallanUse {
   no: number; tax: number; usedHere: number; balance: number;
-  forThisReturn: number;                       // the limit for this return (tax less money kept for other returns)
+  forThisReturn: number;                       // the limit for this return: its own sections + approved
   left: number;                                // forThisReturn - usedHere
-  limitFrom: 'other-forms' | 'breakup' | 'whole';
+  otherShare: number;                          // share of other returns' sections on the split (e.g. 1002 salary)
+  otherSections: string[];                     // those sections
+  approved: number;                            // part of otherShare allowed for this return (by the user)
+  takenFromOther: number;                      // of that, actually used by this return's rows
+  limitFrom: 'split' | 'missing';              // split known (receipt or typed) / missing
+  pool: number;                                // this return's own sections on the split
   interestPaid: number; interestDue: number; notes: string[];
 }
 export interface MatchException {
-  kind: 'too-large' | 'no-challan' | 'duplicate' | 'given-mismatch' | 'interest-short' | 'over-limit' | 'split-unknown';
+  kind: 'too-large' | 'no-challan' | 'duplicate' | 'given-mismatch' | 'interest-short' | 'over-limit' | 'split-missing';
   rows: number[]; challans: number[]; message: string;
 }
-export interface MatchResult { rows: RowMatch[]; challans: ChallanUse[]; exceptions: MatchException[] }
+/** A challan whose other-return share could cover rows left without a challan - only with the user's approval. */
+export interface ShortfallOffer { no: number; available: number; suggest: number; sections: string[]; rows: number }
+export interface MatchResult {
+  rows: RowMatch[]; challans: ChallanUse[]; exceptions: MatchException[];
+  shortTax: number;                            // tax of rows left without a challan
+  offers: ShortfallOffer[];
+}
 
 // ---------------------------------------------------------------- dates and money
 const parts = (d: Ymd) => d.split('-').map(Number) as [number, number, number];
@@ -88,33 +100,41 @@ export function parseBreakup(text: unknown): Record<string, number> | null {
   if (!t) return null;
   const out: Record<string, number> = {};
   for (const part of t.split(/[;,\n]+/)) {
-    const m = part.trim().match(/^(\d{4})\s*[=:]\s*([\d.]+)$/);
-    if (!m) throw new Error(`Section breakup "${part.trim()}" should look like 1023=5000`);
-    out[m[1]] = (out[m[1]] ?? 0) + Number(m[2]);
+    const m = part.trim().match(/^(\d{4}|this|other)\s*[=:]\s*([\d.]+)$/i);
+    if (!m) throw new Error(`Section breakup "${part.trim()}" should look like 1023=5000 (or this=5000 / other=5000)`);
+    const k = /^\d/.test(m[1]) ? m[1] : m[1].toUpperCase();
+    out[k] = (out[k] ?? 0) + Number(m[2]);
   }
   return out;
 }
 
+/** Breakup as text for the workbook column ("1002=50000; 1023=4000"). */
+export const formatBreakup = (b: Record<string, number>) => Object.entries(b).map(([k, v]) => `${k === 'THIS' ? 'this' : k === 'OTHER' ? 'other' : k}=${v}`).join('; ');
+
 // ---------------------------------------------------------------- matching
-export function matchChallans(challansIn: ChallanIn[], rows: RowIn[]): MatchResult {
-  // with "Used by other forms" given, that figure is the limit; the receipt's section split no longer restricts the rows
-  const challans = challansIn.map(c => (c.otherForms !== null && c.otherForms !== undefined && Number.isFinite(c.otherForms) && c.breakup ? { ...c, breakup: null } : c));
-  const used = new Map<string, number>();                       // `${challan}|${code or *}` -> amount used
-  const capKey = (c: ChallanIn, code: string) => `${c.no}|${c.breakup ? code : '*'}`;
-  const capacity = (c: ChallanIn, code: string) =>
-    Math.min((c.breakup && code !== '*' ? (c.breakup[code] ?? 0) : c.tax) - (used.get(capKey(c, code)) ?? 0), free(c));
+export function matchChallans(challans: ChallanIn[], rows: RowIn[], opts: { form?: Form } = {}): MatchResult {
+  const used = new Map<string, number>();                       // `${challan}|${code}` -> amount used
+  const capKey = (c: ChallanIn, code: string) => `${c.no}|${code}`;
   const usedTotal = new Map<number, number>();
   const use = (c: ChallanIn, code: string, amt: number) => {
     used.set(capKey(c, code), (used.get(capKey(c, code)) ?? 0) + amt);
     usedTotal.set(c.no, (usedTotal.get(c.no) ?? 0) + amt);
   };
-  // money of a challan this return may use (v2.1 strict limit): its tax less what other returns use,
-  // else less the breakup share of sections this return has no rows for, else the whole tax
+  // v2.2: this return's money on a challan = the split's sections of this form (any section); the
+  // other forms' share only up to what the user approved. No split: the whole tax, for a preview only
+  // (the challan is flagged split-missing and the return cannot be built until the split is given).
   const codesHere = new Set(rows.map(r => r.code));
-  const hasOther = (c: ChallanIn) => c.otherForms !== null && c.otherForms !== undefined && Number.isFinite(c.otherForms);
-  const reserved = (c: ChallanIn) => (hasOther(c) ? c.otherForms! : c.breakup ? Object.entries(c.breakup).filter(([k]) => !codesHere.has(k)).reduce((a, [, v]) => a + v, 0) : 0);
-  const limitOf = (c: ChallanIn) => r2(Math.max(0, c.tax - reserved(c)));
+  const thisForm = (k: string) => k === 'THIS' || (k !== 'OTHER' && (opts.form ? (SECTION_MAP[k]?.forms ?? []).includes(opts.form) || codesHere.has(k) : codesHere.has(k)));
+  const pool = (c: ChallanIn) => (c.breakup ? r2(Object.entries(c.breakup).filter(([k]) => thisForm(k)).reduce((a, [, v]) => a + v, 0)) : c.tax);
+  const otherSections = (c: ChallanIn) => (c.breakup ? Object.keys(c.breakup).filter(k => !thisForm(k)) : []);
+  const otherShare = (c: ChallanIn) => (c.breakup ? r2(Math.max(0, c.tax - pool(c))) : 0);
+  const approvedOf = (c: ChallanIn) => r2(Math.min(Math.max(0, Number(c.approved) || 0), otherShare(c)));
+  const limitOf = (c: ChallanIn) => r2(Math.min(c.tax, pool(c) + approvedOf(c)));
+  const reserved = (c: ChallanIn) => r2(c.tax - limitOf(c));
   const free = (c: ChallanIn) => r2(limitOf(c) - (usedTotal.get(c.no) ?? 0));
+  // a section's own share left (used only to recognise an EXACT match; capacity is this return's whole money)
+  const secLeft = (c: ChallanIn, code: string) => (c.breakup && code !== '*' ? r2((c.breakup[code] ?? 0) - (used.get(capKey(c, code)) ?? 0)) : free(c));
+  const capacity = (c: ChallanIn, _code: string) => free(c);
   const byNo = new Map(challans.map(c => [c.no, c]));
   const out: RowMatch[] = [];
   const exceptions: MatchException[] = [];
@@ -137,7 +157,6 @@ export function matchChallans(challansIn: ChallanIn[], rows: RowIn[]): MatchResu
       if (c.date < `${monthKey(r.dateDeducted)}-01`) problems.push(`challan dated ${c.date} is before the month of deduction (${r.dateDeducted})`);
       const mh = majorHeadFor(r.pan);
       if (c.majorHead && mh && c.majorHead !== mh) problems.push(`payee needs major head ${mh}, challan is ${c.majorHead}`);
-      if (c.breakup && !(r.code in c.breakup)) problems.push(`challan breakup has no section ${r.code}`);
     }
     if (problems.length) {
       out.push({ row: r.row, challanNo: r.challanNo, status: 'exception', reason: problems.join('; ') });
@@ -245,7 +264,6 @@ export function matchChallans(challansIn: ChallanIn[], rows: RowIn[]): MatchResu
     const due = dueDate(`${month}-01`);
     return challans.filter(c => c.date >= (groupFrom || `${month}-01`))
       .filter(c => !c.majorHead || !mhWanted || (otherHead ? c.majorHead !== mhWanted : c.majorHead === mhWanted))
-      .filter(c => code === '*' || !c.breakup || (c.breakup[code] ?? 0) > 0)
       .sort((a, b) => (a.date <= due) === (b.date <= due) ? a.date.localeCompare(b.date) : (a.date <= due ? -1 : 1));
   };
 
@@ -264,18 +282,18 @@ export function matchChallans(challansIn: ChallanIn[], rows: RowIn[]): MatchResu
       const total = r2(grp.reduce((a, r) => a + r.tax, 0));
       groupFrom = grp.map(r => r.dateDeducted).sort().at(-1)!;
       for (const other of withHead ? [false, true] : [false]) {
-        // a challan with a breakup can only serve a single-section group, from that section's share
-        const cands = candidates(month, code, mh, other).filter(c => code !== '*' || !c.breakup);
-        const cap = (c: ChallanIn) => capacity(c, c.breakup ? code : '*');
+        // this return's money on a challan serves any of its sections; a section share only marks an exact match
+        const cands = candidates(month, code, mh, other);
+        const cap = (c: ChallanIn) => (mode === 'exact' && code !== '*' && c.breakup ? Math.min(secLeft(c, code), free(c)) : capacity(c, code));
         let pick: ChallanIn | undefined, how = '';
         if (mode === 'exact') {
           const exact = cands.filter(c => Math.abs(cap(c) - total) <= 0.5);
           const first = exact.filter(c => c.date === exact[0]?.date);
-          if (first.length === 1) { pick = first[0]; how = pick.breakup ? `its section ${code} share equals these rows exactly` : 'challan amount equals these rows exactly'; }
+          if (first.length === 1) { pick = first[0]; how = pick.breakup && code !== '*' ? `its section ${code} share equals these rows exactly` : 'the amount for this return equals these rows exactly'; }
         } else {
           const fits = cands.filter(c => cap(c) + 0.5 >= total).sort((a, b) => a.date.localeCompare(b.date));
           const first = fits.filter(c => c.date === fits[0]?.date);
-          if (first.length === 1) { pick = first[0]; how = `first challan after the deduction that can take these rows; Rs ${inr(r2(cap(pick) - total))} left${pick.breakup ? ` in its section ${code} share` : ''} - balance for other forms or rows`; }
+          if (first.length === 1) { pick = first[0]; how = `first challan after the deduction that can take these rows; Rs ${inr(r2(cap(pick) - total))} of this return's money left on it`; }
           else if (first.length > 1) {
             const msg = `${describe(month, mh, code, grp, total)}: challans ${first.map(c => '#' + c.no).join(', ')} (same date ${first[0].date}) could each take these rows. Add the section breakup / major head on the challans, or choose (needs a decision).`;
             exceptions.push({ kind: 'too-large', rows: grp.map(r => r.row), challans: first.map(c => c.no), message: msg });
@@ -286,7 +304,7 @@ export function matchChallans(challansIn: ChallanIn[], rows: RowIn[]): MatchResu
         if (pick) {
           for (const r of grp) {
             const rmh = majorHeadFor(r.pan);
-            use(pick, pick.breakup ? r.code : '*', r.tax);
+            use(pick, r.code, r.tax);
             out.push({ row: r.row, challanNo: pick.no, status: 'matched',
               reason: `${describe(month, mh, code, grp, total)} -> challan #${pick.no} of ${pick.date}; ${how}${headNote(pick, rmh)}${lateNote(pick, month)}` });
           }
@@ -302,13 +320,7 @@ export function matchChallans(challansIn: ChallanIn[], rows: RowIn[]): MatchResu
   runPass(true, true, 'fit');         // earliest challan (section share) that can take a section's rows
   runPass(false, true, 'fit');        // earliest challan that can take the month's rows
 
-  // v2.1: money kept for another return (24Q salary etc.) is never borrowed. Where rows are left over,
-  // the message below points at challans whose kept share may be wrong (receipt split vs the other return).
-  const keptHint = (from: string) => {
-    const ks = challans.filter(c => c.date >= from && reserved(c) > 1);
-    return ks.length ? ` Money kept for other returns, not used: ${ks.map(c => `#${c.no} Rs ${inr(reserved(c))}${hasOther(c) ? ' (used by other forms, as entered)' : ` (receipt share for section ${Object.keys(c.breakup!).filter(k => !codesHere.has(k)).join(', ')})`}`).join('; ')}. If the other return (e.g. 24Q) used less than that, enter what it used under "Used by other forms" for that challan.` : '';
-  };
-
+  // money of other returns' sections is never taken here; rows left over get offers (below) for the user to approve
   // whatever is left: no challan, or too large for any one challan
   for (const [k, grp] of groupBy(pending(), anyBreakup)) {
     const [month, mh, code] = k.split('|');
@@ -316,7 +328,7 @@ export function matchChallans(challansIn: ChallanIn[], rows: RowIn[]): MatchResu
     groupFrom = grp.map(r => r.dateDeducted).sort().at(-1)!;
     const cands = [...candidates(month, code, mh, false), ...candidates(month, code, mh, true)];
     const msg = cands.length
-      ? `${describe(month, mh, code, grp, total)}: no single challan has enough left for this return (most left: Rs ${inr(r2(Math.max(0, ...cands.map(c => free(c)))))}). A short deposit, a challan missing from the sheet, or a wrong split with another return - needs a decision.${keptHint(groupFrom)}`
+      ? `${describe(month, mh, code, grp, total)}: no challan has enough of this return's money left (most left: Rs ${inr(r2(Math.max(0, ...cands.map(c => free(c)))))}). Allow part of another return's share on a challan, add a missing challan, or a short deposit - needs a decision.`
       : `${describe(month, mh, code, grp, total)}: no challan dated on or after ${groupFrom}${code !== '*' ? ` covering section ${code}` : ''}.Add the challan, or decide how this is to be paid (needs a decision).`;
     exceptions.push({ kind: cands.length ? 'too-large' : 'no-challan', rows: grp.map(r => r.row), challans: [...new Set(cands.map(c => c.no))], message: msg });
     for (const r of grp) out.push({ row: r.row, challanNo: null, status: 'exception', reason: msg });
@@ -331,15 +343,20 @@ export function matchChallans(challansIn: ChallanIn[], rows: RowIn[]): MatchResu
     const notes: string[] = [];
     const balance = r2(c.tax - usedHere);
     const limit = limitOf(c), left = r2(limit - usedHere);
+    if (!c.breakup) notes.push('no receipt or section split - enter how this challan was paid');
     if (!mine.length) notes.push('not used by this return (may belong to another form or quarter)');
-    else if (left > 1) notes.push(`Rs ${inr(left)} of this return's share not used - must be used by another form, or is excess`);
-    if (reserved(c) > 1) notes.push(hasOther(c) ? `Rs ${inr(reserved(c))} used by other forms (as entered) - kept out` : `Rs ${inr(reserved(c))} kept for section ${Object.keys(c.breakup!).filter(k => !codesHere.has(k)).join(', ')} (another return, per the receipt)`);
+    else if (left > 1) notes.push(`Rs ${inr(left)} of this return's money not used - excess, or for another form`);
+    const oth = otherShare(c), appr = approvedOf(c), osec = otherSections(c).map(k => (k === 'OTHER' ? 'other returns' : k)).join(', ');
+    const taken = r2(Math.min(oth, Math.max(0, usedHere - pool(c))));
+    if (oth > 0.5) notes.push(appr > 0.5
+      ? `Rs ${inr(taken)} of the section ${osec} share (Rs ${inr(oth)}) used for this return on your approval (allowed up to Rs ${inr(appr)}) - Rs ${inr(r2(oth - taken))} left for that return`
+      : `Rs ${inr(oth)} for section ${osec} (another return) - kept out`);
     if (left < -0.5) {
       notes.push(`this return uses Rs ${inr(usedHere)}, more than the Rs ${inr(limit)} it may use`);
-      exceptions.push({ kind: 'over-limit', rows: mine.map(r => r.row), challans: [c.no], message: `Challan #${c.no} of ${c.date}: rows linked to it total Rs ${inr(usedHere)}, but only Rs ${inr(limit)} of it is for this return (Rs ${inr(reserved(c))} is for other returns). Move rows to another challan, or correct "Used by other forms".` });
+      exceptions.push({ kind: 'over-limit', rows: mine.map(r => r.row), challans: [c.no], message: `Challan #${c.no} of ${c.date}: rows linked to it total Rs ${inr(usedHere)}, but only Rs ${inr(limit)} of it is for this return (Rs ${inr(reserved(c))} is for other returns). Move rows to another challan, or allow part of the other returns' share.` });
     }
-    if (c.breakup && mine.length && !hasOther(c)) {
-      const diff = Object.entries(c.breakup).filter(([k]) => codesHere.has(k)).map(([k, v]) => [k, r2(mine.filter(r => r.code === k).reduce((a, r) => a + r.tax, 0) - v)] as const).filter(([, d]) => Math.abs(d) > 1);
+    if (c.breakup && mine.length) {
+      const diff = Object.entries(c.breakup).filter(([k]) => thisForm(k) && k !== 'THIS').map(([k, v]) => [k, r2(mine.filter(r => r.code === k).reduce((a, r) => a + r.tax, 0) - v)] as const).filter(([, d]) => Math.abs(d) > 1);
       if (diff.length) notes.push(`rows by section differ from the challan's section breakup (${diff.map(([k, d]) => `${k} ${d > 0 ? '+' : ''}${inr(d)}`).join(', ')}) - allowed, but check`);
     }
     if (c.breakup) {
@@ -350,15 +367,27 @@ export function matchChallans(challansIn: ChallanIn[], rows: RowIn[]): MatchResu
       notes.push(`late deposit: interest due about Rs ${inr(interestDue)}, paid Rs ${inr(c.interest)}`);
       exceptions.push({ kind: 'interest-short', rows: mine.map(r => r.row), challans: [c.no], message: `Challan #${c.no} of ${c.date}: interest on late deposit about Rs ${inr(interestDue)} (1.5% a month or part), challan shows Rs ${inr(c.interest)}. Pay the shortfall or check the dates.` });
     }
-    const limitFrom = hasOther(c) ? 'other-forms' as const : c.breakup ? 'breakup' as const : 'whole' as const;
-    return { no: c.no, tax: c.tax, usedHere, balance, forThisReturn: limit, left, limitFrom, interestPaid: c.interest, interestDue, notes };
+    const limitFrom = c.breakup ? 'split' as const : 'missing' as const;
+    return { no: c.no, tax: c.tax, usedHere, balance, forThisReturn: limit, left, otherShare: oth, otherSections: otherSections(c), approved: appr, takenFromOther: taken, limitFrom, pool: pool(c), interestPaid: c.interest, interestDue, notes };
   });
-  // split not known: a challan used here with money left over and nothing saying whether another return uses it
-  const unknown = useSummary.filter(u => u.usedHere > 0 && u.limitFrom === 'whole' && u.left > 1000);
-  if (unknown.length) exceptions.push({ kind: 'split-unknown', rows: [], challans: unknown.map(u => u.no),
-    message: `Challan(s) ${unknown.map(u => `#${u.no} (Rs ${inr(u.left)} left)`).join(', ')}: nothing shows whether another return (e.g. 24Q salary) also uses ${unknown.length > 1 ? 'these challans' : 'this challan'}, so the split may be wrong. Upload the challan receipt PDFs or the other return's sheet, or enter "Used by other forms" (0 if none).` });
+  // split missing: the return cannot be built until every challan's split is known
+  const missing = challans.filter(c => !c.breakup);
+  if (missing.length) exceptions.push({ kind: 'split-missing', rows: [], challans: missing.map(c => c.no),
+    message: `Challan(s) ${missing.map(c => `#${c.no} (${c.date}, Rs ${inr(c.tax)})`).join(', ')}: no receipt or section split. Upload the challan receipt, or enter how the challan was paid - all for this return, or the amount for each section.` });
+  // rows left without a challan: challans whose other-return share could cover them, for the user to allow
+  const openRows = out.filter(m => m.status === 'exception' && m.challanNo === null).map(m => rowByNo.get(m.row)!).filter(Boolean);
+  const shortTax = r2(openRows.reduce((a, r) => a + r.tax, 0));
+  const offers: ShortfallOffer[] = [];
+  if (openRows.length) for (const c of [...challans].sort((a, b) => a.date.localeCompare(b.date))) {
+    const available = r2(otherShare(c) - approvedOf(c));
+    if (available <= 0.5) continue;
+    const coverable = openRows.filter(r => r.dateDeducted <= c.date);
+    const need = r2(coverable.reduce((a, r) => a + r.tax, 0));
+    if (need <= 0) continue;
+    offers.push({ no: c.no, available, suggest: Math.ceil(Math.min(available, need)), sections: otherSections(c), rows: coverable.length });
+  }
   out.sort((a, b) => a.row - b.row);
-  return { rows: out, challans: useSummary, exceptions };
+  return { rows: out, challans: useSummary, exceptions, shortTax, offers };
 }
 
 // ---------------------------------------------------------------- workbook helpers
@@ -366,7 +395,7 @@ export function matchChallans(challansIn: ChallanIn[], rows: RowIn[]): MatchResu
 export function makeTemplateFull(form: Form): Uint8Array {
   const wb = XLSX.read(makeTemplateWithSection(form), { type: 'array' });
   const hdr = (XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets['Challans'], { header: 1 })[0] ?? []) as string[];
-  wb.Sheets['Challans'] = XLSX.utils.aoa_to_sheet([[...hdr, MAJOR_HEAD_COLUMN, BREAKUP_COLUMN, OTHER_FORMS_COLUMN]]);
+  wb.Sheets['Challans'] = XLSX.utils.aoa_to_sheet([[...hdr, MAJOR_HEAD_COLUMN, BREAKUP_COLUMN, APPROVED_COLUMN]]);
   return XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as Uint8Array;
 }
 
@@ -414,7 +443,7 @@ export function readForMatching(data: ArrayBuffer | Uint8Array): { challans: Cha
         tax: num(r[ci('Tax')]), interest: num(r[ci('Interest')]), fee: num(r[ci('Fee')]), others: num(r[ci('Others')]),
         majorHead: ci(MAJOR_HEAD_COLUMN) >= 0 ? String(r[ci(MAJOR_HEAD_COLUMN)] ?? '').trim().padStart(4, '0').replace(/^0000$/, '') : '',
         breakup: ci(BREAKUP_COLUMN) >= 0 ? parseBreakup(r[ci(BREAKUP_COLUMN)]) : null,
-        otherForms: ci(OTHER_FORMS_COLUMN) >= 0 && r[ci(OTHER_FORMS_COLUMN)] !== null && r[ci(OTHER_FORMS_COLUMN)] !== '' ? num(r[ci(OTHER_FORMS_COLUMN)]) : null,
+        approved: ci(APPROVED_COLUMN) >= 0 && r[ci(APPROVED_COLUMN)] !== null && r[ci(APPROVED_COLUMN)] !== '' ? num(r[ci(APPROVED_COLUMN)]) : null,
       });
     } catch (e) { problems.push(`Challans row ${k + 2}: ${(e as Error).message}`); }
   });
@@ -438,99 +467,66 @@ export function readForMatching(data: ArrayBuffer | Uint8Array): { challans: Cha
   return { challans, rows, problems: [...tc.problems, ...problems], warnings: tc.warnings };
 }
 
-// ---------------------------------------------------------------- the other return's use of each challan (v2.1)
-export interface OtherFormUse { bsr: string; date: Ymd; serial: string; amount: number }
-const MON: Record<string, string> = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
-const keyOf = (u: { bsr: string; date: Ymd; serial: string }) => `${u.bsr.padStart(7, '0')}|${u.date}|${String(Number(u.serial)).padStart(5, '0')}`;
-
-/**
- * How much of each challan another return of the same quarter claims, read from that return's sheet:
- *  - a Compu-TDS 24Q / 26Q / 27Q import sheet: rows with "Total Tax deposited" and "Challan Detail"
- *    like "1  (1234567, 07-Sep-2026, 00001)" (e.g. the 24Q sheet's Challan_adjustment), or
- *  - this tool's input workbook for the other form (Challans + Deductees with "Challan #" filled).
- * Amounts are summed per challan (BSR, date, serial).
- */
-export function readOtherFormUse(data: ArrayBuffer | Uint8Array): { uses: OtherFormUse[]; problems: string[] } {
-  const wb = XLSX.read(data, { type: 'array' });
-  const sums = new Map<string, OtherFormUse>();
-  const add = (u: OtherFormUse) => { const k = keyOf(u); const o = sums.get(k); if (o) o.amount = r2(o.amount + u.amount); else sums.set(k, { ...u, bsr: u.bsr.padStart(7, '0'), serial: String(Number(u.serial)).padStart(5, '0') }); };
-  // a. Compu-TDS sheets
-  for (const sn of wb.SheetNames) {
-    const g = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[sn], { header: 1, raw: true, defval: null });
-    const h = g.findIndex(r => r.some(v => /challan detail/i.test(String(v ?? ''))) && r.some(v => /tax deposited/i.test(String(v ?? ''))));
-    if (h < 0) continue;
-    const cDet = g[h].findIndex(v => /challan detail/i.test(String(v ?? '')));
-    const cAmt = g[h].findIndex(v => /total tax deposited/i.test(String(v ?? ''))) >= 0 ? g[h].findIndex(v => /total tax deposited/i.test(String(v ?? ''))) : g[h].findIndex(v => /tax deposited/i.test(String(v ?? '')));
-    for (const r of g.slice(h + 1)) {
-      const m = String(r[cDet] ?? '').match(/\(\s*(\d{7})\s*,\s*(\d{1,2})-([A-Za-z]{3})-(\d{4})\s*,\s*(\d{1,5})\s*\)/);
-      if (!m || !MON[m[3].toLowerCase()]) continue;
-      add({ bsr: m[1], date: `${m[4]}-${MON[m[3].toLowerCase()]}-${m[2].padStart(2, '0')}`, serial: m[5], amount: num(r[cAmt]) });
-    }
-  }
-  if (sums.size) return { uses: [...sums.values()], problems: [] };
-  // b. this tool's input workbook for the other form
-  if (wb.Sheets['Challans'] && wb.Sheets['Deductees']) {
-    try {
-      const m = readForMatching(data);
-      const byNo = new Map(m.challans.map(c => [c.no, c]));
-      const dg = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets['Deductees'], { header: 1, raw: true, defval: null });
-      const dh = (dg[0] ?? []).map(v => String(v ?? '').trim());
-      const cNo = dh.indexOf('Challan #'), cTax = dh.indexOf('Tax'), cDep = dh.indexOf('Tax deposited (blank = Tax)');
-      for (const r of dg.slice(1)) {
-        const c = byNo.get(Number(r[cNo]));
-        if (!c) continue;
-        const dep = cDep >= 0 && r[cDep] !== null && r[cDep] !== '' ? num(r[cDep]) : num(r[cTax]);
-        add({ bsr: c.bsr, date: c.date, serial: c.serial, amount: dep });
-      }
-    } catch (e) { return { uses: [], problems: [(e as Error).message] }; }
-    if (sums.size) return { uses: [...sums.values()], problems: [] };
-  }
-  return { uses: [], problems: ['No challan use found - expected a Compu-TDS sheet with "Challan Detail" and "Total Tax deposited" columns (e.g. the 24Q Challan_adjustment sheet), or this tool\'s input workbook for the other form with "Challan #" filled'] };
-}
-
-/**
- * Write "Used by other forms" on the Challans sheet: the given amounts (summed over the other returns
- * passed together) for matching challans; challans not mentioned are left as they are.
- */
-export function setOtherForms(data: ArrayBuffer | Uint8Array, uses: OtherFormUse[]): { bytes: Uint8Array; matched: { no: number; amount: number }[]; notOnSheet: OtherFormUse[] } {
+// ---------------------------------------------------------------- per-challan split and approval (v2.2)
+function setChallanCell(data: ArrayBuffer | Uint8Array, challanNo: number, header: string, value: string | number | null): Uint8Array {
   const wb = XLSX.read(data, { type: 'array', cellDates: false });
   const ws = wb.Sheets['Challans'];
   const g = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, raw: true, defval: null });
   const hdr = (g[0] ?? []).map(v => String(v ?? '').trim());
-  let col = hdr.indexOf(OTHER_FORMS_COLUMN);
-  if (col < 0) { col = hdr.length; ws[XLSX.utils.encode_cell({ r: 0, c: col })] = { t: 's', v: OTHER_FORMS_COLUMN };
-    const rg = XLSX.utils.decode_range(ws['!ref']!); rg.e.c = Math.max(rg.e.c, col); ws['!ref'] = XLSX.utils.encode_range(rg); }
-  const total = new Map<string, number>();
-  for (const u of uses) total.set(keyOf(u), r2((total.get(keyOf(u)) ?? 0) + u.amount));
-  const challans = readForMatching(data).challans;
-  const matched: { no: number; amount: number }[] = [];
-  const hit = new Set<string>();
-  challans.forEach(c => {
-    const k = keyOf(c), amt = total.get(k);
-    if (amt === undefined) return;
-    hit.add(k);
-    const r = g.findIndex((row, i) => i > 0 && Number(row[hdr.indexOf('Challan #')]) === c.no);
-    if (r < 0) return;
-    ws[XLSX.utils.encode_cell({ r, c: col })] = { t: 'n', v: amt };
-    matched.push({ no: c.no, amount: amt });
-  });
-  return { bytes: new Uint8Array(XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer), matched, notOnSheet: uses.filter(u => !hit.has(keyOf(u))) };
-}
-
-/** Set (or clear, with null) "Used by other forms" for one challan. */
-export function setOtherFormsFor(data: ArrayBuffer | Uint8Array, challanNo: number, amount: number | null): Uint8Array {
-  const wb = XLSX.read(data, { type: 'array', cellDates: false });
-  const ws = wb.Sheets['Challans'];
-  const g = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, raw: true, defval: null });
-  const hdr = (g[0] ?? []).map(v => String(v ?? '').trim());
-  let col = hdr.indexOf(OTHER_FORMS_COLUMN);
-  if (col < 0) { col = hdr.length; ws[XLSX.utils.encode_cell({ r: 0, c: col })] = { t: 's', v: OTHER_FORMS_COLUMN };
-    const rg = XLSX.utils.decode_range(ws['!ref']!); rg.e.c = Math.max(rg.e.c, col); ws['!ref'] = XLSX.utils.encode_range(rg); }
+  let col = hdr.indexOf(header);
+  if (col < 0) {
+    col = hdr.length; ws[XLSX.utils.encode_cell({ r: 0, c: col })] = { t: 's', v: header };
+    const rg = XLSX.utils.decode_range(ws['!ref']!); rg.e.c = Math.max(rg.e.c, col); ws['!ref'] = XLSX.utils.encode_range(rg);
+  }
   const r = g.findIndex((row, i) => i > 0 && Number(row[hdr.indexOf('Challan #')]) === challanNo);
   if (r < 0) throw new Error(`Challan #${challanNo} is not on the Challans sheet`);
   const cell = XLSX.utils.encode_cell({ r, c: col });
-  if (amount === null) delete ws[cell]; else ws[cell] = { t: 'n', v: amount };
+  if (value === null || value === '') delete ws[cell];
+  else ws[cell] = typeof value === 'number' ? { t: 'n', v: value } : { t: 's', v: value };
   return new Uint8Array(XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer);
+}
+
+/** Set (or clear) a challan's split by section. It must add up to the challan's tax. */
+export function setChallanSplit(data: ArrayBuffer | Uint8Array, challanNo: number, split: Record<string, number> | null): Uint8Array {
+  if (split) {
+    const c = readForMatching(data).challans.find(x => x.no === challanNo);
+    if (!c) throw new Error(`Challan #${challanNo} is not on the Challans sheet`);
+    const sum = r2(Object.values(split).reduce((a, b) => a + b, 0));
+    if (Math.abs(sum - c.tax) > 0.5) throw new Error(`The split adds up to Rs ${inr(sum)} but challan #${challanNo}'s tax is Rs ${inr(c.tax)}`);
+    if (Object.values(split).some(v => !(v >= 0))) throw new Error('Amounts in the split cannot be negative');
+  }
+  return setChallanCell(data, challanNo, BREAKUP_COLUMN, split ? formatBreakup(split) : null);
+}
+
+/**
+ * For each challan offered (rows short, other-return share available): the smallest amount to allow from
+ * its other-return share so that every row gets a challan, and what that does to interest on late deposit.
+ * Nothing is applied - the user chooses (the tool cannot know which challan's split was wrong).
+ */
+export interface ApprovalOption { no: number; amount: number; clearsAll: boolean; openAfter: number; interestShort: number }
+export function approvalOptions(challans: ChallanIn[], rows: RowIn[], opts: { form?: Form } = {}): ApprovalOption[] {
+  const base = matchChallans(challans, rows, opts);
+  const short = (r: MatchResult) => r.exceptions.filter(e => e.kind === 'interest-short').reduce((a, e) => {
+    const c = r.challans.find(u => u.no === e.challans[0]); return a + (c ? Math.max(0, c.interestDue - c.interestPaid) : 0);
+  }, 0);
+  const out: ApprovalOption[] = [];
+  for (const o of base.offers) {
+    const c = challans.find(x => x.no === o.no)!;
+    const run = (extra: number) => matchChallans(challans.map(x => (x.no === o.no ? { ...x, approved: r2((Number(c.approved) || 0) + extra) } : x)), rows, opts);
+    const full = run(o.available);
+    if (full.shortTax > 0) { out.push({ no: o.no, amount: Math.ceil(o.available), clearsAll: false, openAfter: full.rows.filter(x => x.challanNo === null).length, interestShort: short(full) }); continue; }
+    let lo = 0, hi = Math.ceil(o.available);
+    while (hi - lo > 1) { const mid = Math.floor((lo + hi) / 2); if (run(mid).shortTax === 0) hi = mid; else lo = mid; }
+    const best = run(hi);
+    out.push({ no: o.no, amount: hi, clearsAll: best.shortTax === 0, openAfter: best.rows.filter(x => x.challanNo === null).length, interestShort: short(best) });
+  }
+  return out.sort((a, b) => Number(b.clearsAll) - Number(a.clearsAll) || a.interestShort - b.interestShort || a.amount - b.amount);
+}
+
+/** Record (or clear) how much of a challan's other-return share the user allowed this return to use. */
+export function setApproved(data: ArrayBuffer | Uint8Array, challanNo: number, amount: number | null): Uint8Array {
+  if (amount !== null && !(amount >= 0)) throw new Error('The allowed amount cannot be negative');
+  return setChallanCell(data, challanNo, APPROVED_COLUMN, amount);
 }
 
 /** Write the matched challan numbers into the Deductees "Challan #" column (approved rows only). */

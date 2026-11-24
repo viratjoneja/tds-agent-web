@@ -54,11 +54,11 @@ check(links(r) === '1,1' && r.challans[0].balance === 90000 && !/check the other
 n = 1;
 r = matchChallans([sal], [row(IND, '1023', '2026-07-31', 10000), row(IND, '1023', '2026-07-31', 2000)]);
 check(links(r) === '1,exception', `rows beyond the challan's own share: salary share not borrowed, the row is left for a decision (${links(r)})`);
-check(/receipt share for section 1002/.test(r.rows[1].reason) && /Used by other forms/.test(r.rows[1].reason), 'the open row points at the salary share and "Used by other forms"');
+check(r.offers.length === 1 && r.offers[0].sections.join() === '1002' && r.shortTax === 2000, 'the salary share is offered (Rs 2,000 short), not taken');
 n = 1;
-r = matchChallans([{ ...sal, otherForms: 88000 }], [row(IND, '1023', '2026-07-31', 10000), row(IND, '1023', '2026-07-31', 2000)]);
-check(links(r) === '1,1' && r.challans[0].forThisReturn === 12000 && r.challans[0].limitFrom === 'other-forms' && !r.exceptions.length,
-  '24Q used only 88,000 of the 90,000 salary share: "Used by other forms" = 88,000 frees 2,000 for this return, no exception');
+r = matchChallans([{ ...sal, approved: 2000 }], [row(IND, '1023', '2026-07-31', 10000), row(IND, '1023', '2026-07-31', 2000)]);
+check(links(r) === '1,1' && r.challans[0].forThisReturn === 12000 && r.challans[0].takenFromOther === 2000 && !r.exceptions.length && /Rs 88,000 left for that return/.test(r.challans[0].notes.join()),
+  'user allows Rs 2,000 of the salary share: rows linked, Rs 88,000 left for the salary return');
 
 // 4. section breakup different from the rows: allowed, noted on the challan
 n = 1;

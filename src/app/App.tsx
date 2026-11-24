@@ -22,6 +22,7 @@ export interface Session {
   rrr: string; fileName: string;
   csi: { info: CsiInfo; bytes: Uint8Array } | null;
   withSections: Uint8Array | null;                   // after the Section codes step
+  challanWork: Uint8Array | null;                    // the Challans step's workbook (receipts, splits, approvals) - kept when moving between steps
   linked: Uint8Array | null;                         // after the Challans step
   lines: string[] | null;                            // built return
 }
@@ -29,7 +30,7 @@ export interface StepProps { s: Session; set: (p: Partial<Session>) => void; nex
 
 const STEPS = ['Setup', 'Upload', 'Section codes', 'Challans', 'Review', 'Download', 'FVU results'];
 const fresh = (): Session => ({ form: '140', fy: 2026, quarter: 2, workbook: null, fvu: null, deductor: null, rrr: '', fileName: '', csi: null,
-  withSections: null, linked: null, lines: null });
+  withSections: null, challanWork: null, linked: null, lines: null });
 
 export function App() {
   const [s, setS] = useState<Session>(fresh);
@@ -42,8 +43,9 @@ export function App() {
   // a change to an earlier step throws away everything built after it
   const set = (p: Partial<Session>) => setS(old => {
     const n = { ...old, ...p };
-    if ('form' in p || 'fy' in p || 'quarter' in p || 'workbook' in p || 'fvu' in p) Object.assign(n, { withSections: null, linked: null, lines: null });
-    if ('withSections' in p) Object.assign(n, { linked: null, lines: null });
+    if ('form' in p || 'fy' in p || 'quarter' in p || 'workbook' in p || 'fvu' in p) Object.assign(n, { withSections: null, challanWork: null, linked: null, lines: null });
+    if ('withSections' in p) Object.assign(n, { challanWork: null, linked: null, lines: null });
+    if ('challanWork' in p) Object.assign(n, { linked: null, lines: null });
     if ('linked' in p || 'rrr' in p) n.lines = null;
     return n;
   });

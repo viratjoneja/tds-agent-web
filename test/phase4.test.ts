@@ -124,8 +124,8 @@ n = 1;
 const shCh = [ch(1, '2026-08-07', 10000, { majorHead: '0021', breakup: { 1023: 2000, 1073: 8000 } })];
 const shRows = [row(IND, '1023', '2026-07-31', 3000)];
 const shRes = matchChallans(shCh, shRows);
-check(shRes.rows[0].status === 'exception' && /#1 Rs 8,000 \(receipt share for section 1073\)/.test(shRes.rows[0].reason) && /Used by other forms/.test(shRes.rows[0].reason),
-  'no room in the shares for this return: the other return\'s share is NOT borrowed (v2.1); the row is a decision, pointing at the kept share');
+check(shRes.rows[0].status === 'exception' && shRes.shortTax === 3000 && shRes.offers.length === 1 && shRes.offers[0].available === 8000 && shRes.offers[0].sections.join() === '1073',
+  'no room in this return\'s money: the other return\'s share is NOT taken (v2.2); it is offered for the user to allow');
 check(checkProposals(JSON.stringify({ proposals: [{ rows: [2], challan: 1, explanation: 'x' }] }), shCh, shRows, shRes).proposals[0].verdict === 'rejected',
   'AI proposal that would use the other return\'s share: rejected');
 n = 1;

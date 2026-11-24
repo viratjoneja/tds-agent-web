@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
-import { applyChallanMatches, matchChallans, readForMatching, readOtherFormUse, setOtherForms, setOtherFormsFor, type OtherFormUse, type RowIn } from '../challanMatch.ts';
+import { applyChallanMatches, approvalOptions, formatBreakup, matchChallans, readForMatching, setApproved, setChallanSplit, type ApprovalOption, type ChallanIn, type ChallanUse, type RowIn } from '../challanMatch.ts';
 import { addChallansToWorkbook, fromGemini, geminiChallanRequest, maskReceiptText, readChallanPdfs, type ChallanReceipt, type ReadResult } from '../challanPdf.ts';
 import { applyProposals, checkProposals, geminiExceptionRequest, maskedPayload, type CheckedProposal } from '../aiExceptions.ts';
 import { askGemini } from './ai.ts';
-import { clearChallans, download, inr, readBytes, typedChallanLinks } from './util.ts';
+import { clearChallans, download, inr, readBytes, reviewWorkbook, typedChallanLinks } from './util.ts';
 import { Table } from './Table.tsx';
 import type { StepProps } from './App.tsx';
+import type { Form } from '../protean.ts';
 
 type PdfRead = { name: string; result: ReadResult; text: string };
 
@@ -17,39 +18,56 @@ async function loadPdfJs() {
 }
 
 export function ChallansStep({ s, set, next, ai }: StepProps) {
-  const [work, setWork] = useState<Uint8Array>(s.withSections!);
+  const [work, setWorkHere] = useState<Uint8Array>(s.challanWork ?? s.withSections!);
+  const setWork = (b: Uint8Array) => { setWorkHere(b); set({ challanWork: b }); };
   const [overrides, setOverrides] = useState<Record<number, number>>({});
   const [msg, setMsg] = useState<{ cls: string; text: string }[]>([]);
+  const [showAll, setShowAll] = useState(false);
+  const [editing, setEditing] = useState<number | null>(null);
+  const opts = useMemo(() => ({ form: s.form }), [s.form]);
 
   const m = useMemo(() => { try { return readForMatching(work); } catch (e) { return { challans: [], rows: [], problems: [(e as Error).message], warnings: [] }; } }, [work]);
   const rowsIn: RowIn[] = useMemo(() => m.rows.map(r => (overrides[r.row] ? { ...r, challanNo: overrides[r.row] } : r)), [m, overrides]);
-  const res = useMemo(() => (m.problems.length ? null : matchChallans(m.challans, rowsIn)), [m, rowsIn]);
+  const res = useMemo(() => (m.problems.length ? null : matchChallans(m.challans, rowsIn, opts)), [m, rowsIn, opts]);
+  const options = useMemo(() => (res && res.offers.length ? approvalOptions(m.challans, rowsIn, opts) : []), [res, m, rowsIn, opts]);
   const rowById = useMemo(() => new Map(m.rows.map(r => [r.row, r])), [m]);
   const chById = useMemo(() => new Map(m.challans.map(c => [c.no, c])), [m]);
   const useById = useMemo(() => new Map((res?.challans ?? []).map(c => [c.no, c])), [res]);
   const unlinked = res ? res.rows.filter(r => r.challanNo === null).length : 0;
-  const blocking = res ? res.exceptions.filter(e => e.kind === 'split-unknown' || e.kind === 'over-limit') : [];
+  const blocking = res ? res.exceptions.filter(e => e.kind === 'split-missing' || e.kind === 'over-limit') : [];
   const canApply = !!res && unlinked === 0 && blocking.length === 0;
   const setWorkbook = (b: Uint8Array) => { setWork(b); setOverrides({}); };
-  const setOther = (no: number, text: string) => {
+  const change = (f: () => Uint8Array, ok?: string) => {
+    try { setWork(f()); setMsg(ok ? [{ cls: 'ok', text: ok }] : []); } catch (e) { setMsg([{ cls: 'bad', text: (e as Error).message }]); }
+  };
+  const allow = (no: number, extra: number) => {
+    const c = chById.get(no)!;
+    change(() => setApproved(work, no, Math.round(((Number(c.approved) || 0) + extra) * 100) / 100),
+      `Allowed Rs ${inr(extra, 0)} of challan #${no}'s ${useById.get(no)?.otherSections.join(', ')} share for this return (your approval is recorded on the challan).`);
+  };
+  const setAllowedText = (no: number, text: string) => {
     const t = text.replace(/,/g, '').trim();
     const v = t === '' ? null : Number(t);
     if (v !== null && (!Number.isFinite(v) || v < 0)) { setMsg([{ cls: 'bad', text: `"${text}" is not an amount` }]); return; }
-    const cur = chById.get(no)?.otherForms ?? null;
-    if (cur === v) return;
-    try { setWork(setOtherFormsFor(work, no, v)); } catch (e) { setMsg([{ cls: 'bad', text: (e as Error).message }]); }
+    if ((chById.get(no)?.approved ?? null) === v) return;
+    change(() => setApproved(work, no, v));
   };
-
-  const apply = () => {
-    set({ linked: applyChallanMatches(work, res!.rows.filter(r => r.challanNo !== null).map(r => ({ row: r.row, challanNo: r.challanNo! }))) });
-    next();
-  };
+  const linkedBytes = () => applyChallanMatches(work, res!.rows.filter(r => r.challanNo !== null).map(r => ({ row: r.row, challanNo: r.challanNo! })));
+  const apply = () => { set({ linked: linkedBytes() }); next(); };
+  const setOffSheet = () => reviewWorkbook({ 'Challan set-off': m.challans.map(c => {
+    const u = useById.get(c.no)!;
+    return { 'Challan #': c.no, BSR: c.bsr, Serial: c.serial, Date: c.date, 'Major head': c.majorHead, Tax: c.tax,
+      Split: c.breakup ? formatBreakup(c.breakup) : 'MISSING',
+      "This return's sections": u.pool, "Other returns' sections": u.otherSections.join(', '), "Other returns' share": u.otherShare,
+      'Allowed by you from other share': u.approved, 'Used by this return': u.usedHere, 'Of which from other share': u.takenFromOther,
+      'Left for this return': u.left, 'Left for other returns': Math.round((u.otherShare - u.takenFromOther) * 100) / 100 };
+  }) });
+  const shownRows = res ? (showAll ? res.rows : res.rows.filter(r => r.status === 'exception' || overrides[r.row])) : [];
 
   return (
     <section className="card">
       <h2>4. Challans</h2>
       <Receipts work={work} existing={m.challans.length} setWorkbook={setWorkbook} ai={ai} setMsg={setMsg} />
-      <OtherReturns work={work} setWork={setWork} setMsg={setMsg} />
       {msg.map(x => <p key={x.text} className={x.cls}>{x.text}</p>)}
 
       {m.problems.length > 0 && (
@@ -59,37 +77,43 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
         <details className="banner warn"><summary>{m.warnings.length} row(s) where Tax differs from Amount x Rate % - fine if it is the tax actually deducted</summary>
           <ul>{m.warnings.map(p => <li key={p}>{p}</li>)}</ul></details>)}
 
-      {res && <StatusSummary res={res} challans={m.challans} rows={m.rows} unlinked={unlinked} canApply={canApply} />}
+      {res && <StatusSummary res={res} challans={m.challans} rows={m.rows} options={options} unlinked={unlinked} canApply={canApply}
+        onSplit={setEditing} onAllThis={no => change(() => setChallanSplit(work, no, { THIS: chById.get(no)!.tax }), `Challan #${no}: all of it for this return.`)}
+        onAllow={allow} />}
 
       {res && <>
-        <h3>Challans ({m.challans.length})</h3>
-        <Table rows={m.challans} rowClass={c => ((useById.get(c.no)?.interestDue ?? 0) > c.interest + 1 ? 'row-bad' : (useById.get(c.no)?.balance ?? 0) > 1 ? 'row-warn' : '')}
+        <h3>Challans ({m.challans.length}) - how each is set off</h3>
+        <Table rows={m.challans} rowClass={c => (useById.get(c.no)?.limitFrom === 'missing' || (useById.get(c.no)?.left ?? 0) < -0.5 ? 'row-bad' : (useById.get(c.no)?.interestDue ?? 0) > c.interest + 1 ? 'row-warn' : '')}
           cols={[
-            { key: 'no', label: '#' }, { key: 'date', label: 'Date' }, { key: 'bsr', label: 'BSR' }, { key: 'serial', label: 'Serial' },
-            { key: 'majorHead', label: 'Major head' },
+            { key: 'no', label: '#' }, { key: 'serial', label: 'Challan' }, { key: 'date', label: 'Date' }, { key: 'majorHead', label: 'Head' },
             { key: 'tax', label: 'Tax', num: true },
-            { key: 'other', label: 'Used by other forms', value: c => c.otherForms ?? '', render: c => (
-              <input className="code" key={`${c.no}-${c.otherForms ?? ''}`} defaultValue={c.otherForms ?? ''} inputMode="decimal"
-                placeholder={c.breakup ? 'receipt' : '?'} aria-label={`Used by other forms, challan ${c.no}`}
-                onBlur={e => setOther(c.no, e.target.value)} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} />) },
-            { key: 'limit', label: 'For this return', num: true, value: c => useById.get(c.no)?.forThisReturn ?? c.tax },
+            { key: 'bar', label: 'Set-off', value: c => useById.get(c.no)?.usedHere ?? 0, render: c => <SetOffBar u={useById.get(c.no)!} /> },
+            { key: 'split', label: 'Split by section', value: c => (c.breakup ? formatBreakup(c.breakup) : ''), render: c => (
+              <span className="split">{c.breakup ? <small>{splitText(c.breakup)}</small> : <b className="bad">missing</b>}
+                <button className="link" onClick={() => setEditing(c.no)}>{c.breakup ? 'edit' : 'enter'}</button></span>) },
+            { key: 'pool', label: 'This return', num: true, value: c => useById.get(c.no)?.pool ?? 0 },
+            { key: 'other', label: 'Other returns', num: true, value: c => useById.get(c.no)?.otherShare ?? 0 },
+            { key: 'allowed', label: 'Allowed from other', value: c => c.approved ?? '', render: c => ((useById.get(c.no)?.otherShare ?? 0) > 0.5 || c.approved ? (
+              <input className="code" key={`${c.no}-${c.approved ?? ''}`} defaultValue={c.approved ?? ''} inputMode="decimal" placeholder="0"
+                aria-label={`Allowed from other returns' share, challan ${c.no}`}
+                onBlur={e => setAllowedText(c.no, e.target.value)} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} />) : '') },
             { key: 'used', label: 'Used here', num: true, value: c => useById.get(c.no)?.usedHere ?? 0 },
-            { key: 'left', label: 'Left for this return', num: true, value: c => useById.get(c.no)?.left ?? 0 },
-            { key: 'interest', label: 'Interest paid', num: true },
-            { key: 'idue', label: 'Interest due', num: true, value: c => useById.get(c.no)?.interestDue ?? 0 },
+            { key: 'left', label: 'Left', num: true, value: c => useById.get(c.no)?.left ?? 0 },
+            { key: 'idue', label: 'Interest due / paid', value: c => useById.get(c.no)?.interestDue ?? 0, render: c => <small>{inr(useById.get(c.no)?.interestDue ?? 0, 0)} / {inr(c.interest, 0)}</small> },
             { key: 'notes', label: 'Notes', wrap: true, value: c => (useById.get(c.no)?.notes ?? []).join('; ') },
           ]} />
 
         {res.exceptions.length > 0 && <>
           <details className="points" open={res.exceptions.length <= 3}>
             <summary><h3>Points needing a decision ({res.exceptions.length})</h3></summary>
-            <div className="cards">{res.exceptions.map((e, i) => <div key={i} className={`point ${e.kind}`}><b>{e.kind.replace('-', ' ')}</b> {shortMessage(e.message)}</div>)}</div>
+            <div className="cards">{res.exceptions.map((e, i) => <div key={i} className={`point ${e.kind}`}><b>{e.kind.replace('-', ' ')}</b> {e.message}</div>)}</div>
           </details>
-          {ai && unlinked > 0 && <AiProposals challans={m.challans} rows={rowsIn} res={res} onApply={links => setOverrides(o => ({ ...o, ...links }))} />}
+          {ai && unlinked > 0 && <AiProposals challans={m.challans} rows={rowsIn} res={res} form={s.form} onApply={links => setOverrides(o => ({ ...o, ...links }))} />}
         </>}
 
-        <h3>Deductee rows ({res.rows.length}) {unlinked > 0 ? <span className="bad">- {unlinked} need a challan</span> : <span className="ok">- all linked</span>}</h3>
-        <Table rows={res.rows} total={false}
+        <h3>Deductee rows ({res.rows.length}) {unlinked > 0 ? <span className="bad">- {unlinked} need a challan</span> : <span className="ok">- all linked</span>}
+          {' '}<button className="link" onClick={() => setShowAll(v => !v)}>{showAll ? 'show only rows that need attention' : `show all ${res.rows.length} rows`}</button></h3>
+        {shownRows.length > 0 ? <Table rows={shownRows} total={false}
           rowClass={r => (r.status === 'exception' ? (r.challanNo ? 'row-warn' : 'row-bad') : '')}
           cols={[
             { key: 'row', label: 'Row' },
@@ -103,88 +127,131 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
                 <select value={r.challanNo ?? ''} aria-label={`Challan for row ${r.row}`}
                   onChange={e => setOverrides(o => { const n = { ...o }; if (e.target.value) n[r.row] = Number(e.target.value); else delete n[r.row]; return n; })}>
                   <option value="">-- choose --</option>
-                  {m.challans.map(c => <option key={c.no} value={c.no}>#{c.no} {c.date} Rs {inr(c.tax, 0)} (left for this return {inr(useById.get(c.no)?.left ?? c.tax, 0)})</option>)}
-                </select>) : <>#{r.challanNo} {chById.get(r.challanNo!)?.date}</>) },
+                  {m.challans.map(c => <option key={c.no} value={c.no}>#{c.no} {c.serial} {c.date} (left for this return {inr(useById.get(c.no)?.left ?? 0, 0)})</option>)}
+                </select>) : <>#{r.challanNo} {chById.get(r.challanNo!)?.serial} {chById.get(r.challanNo!)?.date}</>) },
             { key: 'reason', label: 'Why', wrap: true, render: r => <small>{r.reason}</small> },
-          ]} />
+          ]} /> : <p className="muted">No rows need attention.</p>}
       </>}
 
-      {res && <p className="muted"><small>"Used by other forms": what the other return of this quarter (e.g. 24Q salary) claims from the challan. It is the limit for this return; blank = taken from the receipt's section split, or unknown. Enter 0 if no other return uses the challan.</small></p>}
+      {editing !== null && chById.get(editing) && (
+        <SplitEditor challan={chById.get(editing)!} form={s.form} codesHere={[...new Set(m.rows.map(r => r.code))].sort()}
+          onCancel={() => setEditing(null)}
+          onSave={split => { try { setWork(setChallanSplit(work, editing, split)); setMsg([{ cls: 'ok', text: `Challan #${editing}: split saved.` }]); setEditing(null); } catch (e) { return (e as Error).message; } return null; }} />)}
+
       <div className="actions">
-        <button className="ghost" disabled={!canApply}
-          onClick={() => download(applyChallanMatches(work, res!.rows.filter(r => r.challanNo !== null).map(r => ({ row: r.row, challanNo: r.challanNo! }))), `linked_${s.workbook!.name.replace(/\.xls$/i, '.xlsx')}`)}>
-          Download workbook with challan links</button>
-        <button disabled={!canApply} onClick={apply}>{unlinked ? `${unlinked} row(s) still need a challan` : blocking.length ? 'Settle the challan split first' : 'Apply challan links and build the return'}</button>
+        {res && <button className="ghost" onClick={() => download(setOffSheet(), `challan_setoff_${s.form}_Q${s.quarter}.xlsx`)}>Download challan set-off (balance left for other returns)</button>}
+        <button className="ghost" disabled={!canApply} onClick={() => download(linkedBytes(), `linked_${s.workbook!.name.replace(/\.xls$/i, '.xlsx')}`)}>Download workbook with challan links</button>
+        <button disabled={!canApply} onClick={apply}>{unlinked ? `${unlinked} row(s) still need a challan` : blocking.length ? 'Settle the challans first' : 'Apply challan links and build the return'}</button>
       </div>
     </section>
   );
 }
 
-/** The engine's long "no room" message without the parts the summary above already says. */
-const shortMessage = (msg: string) => msg
-  .replace(/ A short deposit, a challan missing from the sheet, or a wrong split with another return - needs a decision\./, '')
-  .replace(/ Money kept for other returns, not used:.*$/, '');
+const SECTION_NAME: Record<string, string> = { THIS: 'this return', OTHER: 'other returns' };
+const splitText = (b: Record<string, number>) => Object.entries(b).map(([k, v]) => `${SECTION_NAME[k] ?? k} ${inr(v, 0)}`).join(' · ');
+
+/** Bar: other returns' share kept | used by this return | left for this return. */
+function SetOffBar({ u }: { u: ChallanUse }) {
+  if (!u) return null;
+  if (u.limitFrom === 'missing') return <small className="bad">split missing</small>;
+  const kept = Math.max(0, u.otherShare - u.takenFromOther), used = Math.max(0, u.usedHere), left = Math.max(0, u.left);
+  const total = kept + used + left || 1;
+  const pc = (x: number) => `${(100 * x) / total}%`;
+  return (
+    <span className="setoff" title={`Other returns Rs ${inr(kept, 0)} · this return Rs ${inr(used, 0)}${u.takenFromOther > 0 ? ` (Rs ${inr(u.takenFromOther, 0)} from the other share, approved)` : ''} · left Rs ${inr(left, 0)}`}>
+      <span className="bar"><i className="kept" style={{ width: pc(kept) }} /><i className="used" style={{ width: pc(used) }} /><i className="left" style={{ width: pc(left) }} /></span>
+      <small>{kept > 0.5 ? `other ${inr(kept, 0)} · ` : ''}this {inr(used, 0)}{left > 0.5 ? ` · left ${inr(left, 0)}` : ''}</small>
+    </span>);
+}
+
+/** Enter how a challan was paid: section by section, adding up to the challan's tax. */
+function SplitEditor({ challan, form, codesHere, onCancel, onSave }:
+  { challan: ChallanIn; form: string; codesHere: string[]; onCancel: () => void; onSave: (b: Record<string, number>) => string | null }) {
+  const start = challan.breakup ? Object.entries(challan.breakup).map(([code, v]) => ({ code, amount: String(v) })) : [{ code: codesHere[0] ?? '', amount: '' }];
+  const [lines, setLines] = useState(start);
+  const [err, setErr] = useState('');
+  const sum = lines.reduce((a, l) => a + (Number(l.amount.replace(/,/g, '')) || 0), 0);
+  const diff = Math.round((challan.tax - sum) * 100) / 100;
+  const save = () => {
+    const out: Record<string, number> = {};
+    for (const l of lines) {
+      const code = l.code.trim().toUpperCase(), amt = Number(l.amount.replace(/,/g, ''));
+      if (!code && !l.amount.trim()) continue;
+      if (!/^\d{4}$|^THIS$|^OTHER$/.test(code)) { setErr(`"${l.code}" is not a section code (4 digits, e.g. 1002 salary, 1023)`); return; }
+      if (!(amt >= 0)) { setErr(`Amount for ${code} is not a number`); return; }
+      out[code] = (out[code] ?? 0) + amt;
+    }
+    setErr(onSave(out) ?? '');
+  };
+  return (
+    <div className="modal" role="dialog" aria-label={`Split of challan ${challan.no}`}>
+      <div className="modal-box">
+        <h3>How was challan #{challan.no} ({challan.serial}, {challan.date}, Rs {inr(challan.tax, 0)}) paid?</h3>
+        <p className="muted">Take it from the challan receipt or the payment working. Sections of Form {form} are this return's money; other sections (e.g. 1002 salary) are kept for those returns.</p>
+        <div className="actions left">
+          <button className="ghost" onClick={() => setLines([{ code: 'THIS', amount: String(challan.tax) }])}>All for this return</button>
+          <button className="ghost" onClick={() => setLines([{ code: '1002', amount: '' }, ...codesHere.map(code => ({ code, amount: '' }))])}>Salary + this return's sections</button>
+        </div>
+        <table className="split-lines"><thead><tr><th>Section code</th><th className="num">Amount (Rs)</th><th /></tr></thead>
+          <tbody>{lines.map((l, i) => (
+            <tr key={i}>
+              <td><input className="code" value={l.code} placeholder="1023" aria-label={`Section code, line ${i + 1}`}
+                onChange={e => setLines(ls => ls.map((x, j) => (j === i ? { ...x, code: e.target.value } : x)))} /> <small className="muted">{SECTION_NAME[l.code.trim().toUpperCase()] ?? ''}</small></td>
+              <td className="num"><input value={l.amount} inputMode="decimal" aria-label={`Amount, line ${i + 1}`}
+                onChange={e => setLines(ls => ls.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x)))} /></td>
+              <td><button className="link" onClick={() => setLines(ls => ls.filter((_, j) => j !== i))} aria-label={`Remove line ${i + 1}`}>remove</button></td>
+            </tr>))}</tbody>
+          <tfoot><tr><td><button className="link" onClick={() => setLines(ls => [...ls, { code: '', amount: '' }])}>+ add a section</button></td>
+            <td className="num">{inr(sum, 0)}</td><td className={Math.abs(diff) > 0.5 ? 'bad' : 'ok'}>{Math.abs(diff) > 0.5 ? `${diff > 0 ? 'short' : 'over'} by ${inr(Math.abs(diff), 0)}` : 'adds up'}</td></tr></tfoot>
+        </table>
+        {err && <p className="bad">{err}</p>}
+        <div className="actions"><button className="ghost" onClick={onCancel}>Cancel</button><button disabled={Math.abs(diff) > 0.5} onClick={save}>Save split</button></div>
+      </div>
+    </div>);
+}
 
 type Res = NonNullable<ReturnType<typeof matchChallans>>;
 /** One plain summary of what stands between the user and the return, with the next action. Display only - the rules are in the engine. */
-function StatusSummary({ res, challans, rows, unlinked, canApply }:
-  { res: Res; challans: ReturnType<typeof readForMatching>['challans']; rows: RowIn[]; unlinked: number; canApply: boolean }) {
+function StatusSummary({ res, challans, rows, options, unlinked, canApply, onSplit, onAllThis, onAllow }:
+  { res: Res; challans: ChallanIn[]; rows: RowIn[]; options: ApprovalOption[]; unlinked: number; canApply: boolean;
+    onSplit: (no: number) => void; onAllThis: (no: number) => void; onAllow: (no: number, amount: number) => void }) {
   const byNo = new Map(challans.map(c => [c.no, c]));
-  const taxOf = new Map(rows.map(r => [r.row, r.tax]));
-  const openTax = res.rows.filter(r => r.challanNo === null).reduce((a, r) => a + (taxOf.get(r.row) ?? 0), 0);
-  const label = (no: number) => `#${no} (${byNo.get(no)?.serial}, ${byNo.get(no)?.date})`;
-  const kept = res.challans.filter(u => u.tax - u.forThisReturn > 1 && u.limitFrom === 'breakup');
-  const unknown = res.exceptions.filter(e => e.kind === 'split-unknown').flatMap(e => e.challans);
+  const useOf = new Map(res.challans.map(u => [u.no, u]));
+  const label = (no: number) => `${byNo.get(no)?.serial} of ${byNo.get(no)?.date}`;
+  const missing = res.exceptions.filter(e => e.kind === 'split-missing').flatMap(e => e.challans);
   const over = res.exceptions.filter(e => e.kind === 'over-limit').flatMap(e => e.challans);
-  const others = res.exceptions.filter(e => !['too-large', 'no-challan', 'split-unknown', 'over-limit'].includes(e.kind)).length;
+  const others = res.exceptions.filter(e => !['too-large', 'no-challan', 'split-missing', 'over-limit'].includes(e.kind)).length;
+  void rows;
   if (canApply) return (
-    <div className="banner ok-banner"><b>All {res.rows.length} rows have a challan, and no challan is used beyond its share for this return.</b>
+    <div className="banner ok-banner"><b>All {res.rows.length} rows have a challan, using only this return's money{res.challans.some(u => u.takenFromOther > 0.5) ? ' and what you allowed from other returns' : ''}.</b>
       {others > 0 && <> {others} point(s) below to check before you go on.</>}</div>);
   return (
     <div className="banner error"><b>Before the return can be built:</b>
       <ol>
-        {unlinked > 0 && <li>
-          <b>{unlinked} row(s), Rs {inr(openTax, 0)} of tax, have no room in the challans.</b>{' '}
-          {kept.length > 0
-            ? <>The challan receipts keep {kept.map(u => `Rs ${inr(u.tax - u.forThisReturn, 0)} on ${label(u.no)}`).join(', ')} for salary or another return.
-                If the 24Q (or other return) used less than that, <b>upload the 24Q sheet in the box above</b>, or type what it used in <b>"Used by other forms"</b> for that challan.
-                Otherwise a challan is missing or the deposit was short - choose a challan for these rows in the table below.</>
-            : <>A challan may be missing from the sheet, or the deposit was short. Add the challan (receipt PDFs above), or choose one for these rows in the table below.</>}
+        {missing.length > 0 && <li>
+          <b>{missing.length} challan(s) have no receipt or section split</b> - say how each was paid, or upload its receipt above:
+          <ul className="plain">{missing.map(no => <li key={no}>{label(no)}, Rs {inr(byNo.get(no)!.tax, 0)}{' '}
+            <button className="ghost small" onClick={() => onAllThis(no)}>All for this return</button>{' '}
+            <button className="ghost small" onClick={() => onSplit(no)}>Enter split…</button></li>)}</ul>
         </li>}
-        {unknown.length > 0 && <li>
-          <b>Not known whether {unknown.map(label).join(", ")} also {unknown.length > 1 ? "pay" : "pays"} salary or another return</b> (money is left on them).
-          Upload the challan receipts or the 24Q sheet above, or type in <b>"Used by other forms"</b> what the other return uses - <b>0</b> if none.
+        {unlinked > 0 && <li>
+          <b>{unlinked} row(s), Rs {inr(res.shortTax, 0)} of tax, have no room in this return's money on the challans.</b>
+          {options.length > 0 ? <>{' '}The extra can come from another return's share (e.g. salary, 1002) on one of these challans - only if you allow it.
+            Pick the challan whose other-return share was more than that return actually needed (check the salary register):
+            <ul className="plain">{options.map(o => {
+              const u = useOf.get(o.no)!;
+              return <li key={o.no}>
+                <button className="ghost small" onClick={() => onAllow(o.no, o.amount)}>Allow Rs {inr(o.amount, 0)} from {label(o.no)}</button>{' '}
+                <small>{u.otherSections.join(', ')} share Rs {inr(u.otherShare, 0)} → leaves Rs {inr(u.otherShare - u.approved - o.amount, 0)} for that return; {o.clearsAll ? 'all rows linked' : `${o.openAfter} row(s) still open`}{o.interestShort > 0 ? `; interest short about Rs ${inr(o.interestShort, 0)} in total` : ''}</small>
+              </li>;
+            })}</ul></>
+            : <> No challan has another return's share to spare after these rows' dates. A challan may be missing (upload its receipt), or the deposit was short - choose a challan for these rows below.</>}
         </li>}
         {over.length > 0 && <li>
-          <b>{over.map(label).join(', ')} {over.length > 1 ? 'are' : 'is'} used beyond the share for this return.</b> Move rows to another challan, or correct "Used by other forms".
+          <b>{over.map(label).join(', ')} {over.length > 1 ? 'are' : 'is'} used beyond this return's money.</b> Move rows to another challan, or allow part of the other returns' share.
         </li>}
       </ol>
     </div>);
-}
-
-function OtherReturns({ work, setWork, setMsg }:
-  { work: Uint8Array; setWork: (b: Uint8Array) => void; setMsg: (m: { cls: string; text: string }[]) => void }) {
-  const onFiles = async (files: FileList | null) => {
-    if (!files?.length) return;
-    const uses: OtherFormUse[] = [], bad: string[] = [];
-    for (const f of [...files]) {
-      const r = readOtherFormUse(await readBytes(f));
-      if (r.problems.length) bad.push(`${f.name}: ${r.problems.join('; ')}`); else uses.push(...r.uses);
-    }
-    if (!uses.length) { setMsg(bad.map(text => ({ cls: 'bad', text }))); return; }
-    const out = setOtherForms(work, uses);
-    setWork(out.bytes);
-    setMsg([
-      { cls: 'ok', text: `Used by other forms set from ${files.length} file(s): ${out.matched.map(x => `#${x.no} Rs ${inr(x.amount, 0)}`).join(', ') || 'no challan on this sheet matched'}.` },
-      ...(out.notOnSheet.length ? [{ cls: 'muted', text: `Not on this return's Challans sheet: ${out.notOnSheet.map(u => `${u.serial} of ${u.date} (Rs ${inr(u.amount, 0)})`).join(', ')}.` }] : []),
-      ...bad.map(text => ({ cls: 'bad', text }))]);
-  };
-  return (
-    <div className="sub-card">
-      <label className="file">The other return of this quarter, e.g. the 24Q (Compu-TDS sheet) or this tool's input workbook for that form (optional - gives exactly how much of each challan it uses; best source for the split)
-        <input type="file" accept=".xls,.xlsx" multiple onChange={e => onFiles(e.target.files)} /></label>
-    </div>
-  );
 }
 
 function Receipts({ work, existing, setWorkbook, ai, setMsg }:
@@ -251,8 +318,8 @@ function Receipts({ work, existing, setWorkbook, ai, setMsg }:
   );
 }
 
-function AiProposals({ challans, rows, res, onApply }:
-  { challans: ReturnType<typeof readForMatching>['challans']; rows: RowIn[]; res: NonNullable<ReturnType<typeof matchChallans>>; onApply: (links: Record<number, number>) => void }) {
+function AiProposals({ challans, rows, res, form, onApply }:
+  { challans: ReturnType<typeof readForMatching>['challans']; rows: RowIn[]; res: NonNullable<ReturnType<typeof matchChallans>>; form: Form; onApply: (links: Record<number, number>) => void }) {
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -272,7 +339,7 @@ function AiProposals({ challans, rows, res, onApply }:
   };
   const applyTicked = () => {
     const chosen = props!.filter((_, i) => ticked.has(i));
-    const { links } = applyProposals(challans, rows, res, chosen);
+    const { links } = applyProposals(challans, rows, res, chosen, form);
     const want = new Set(chosen.flatMap(p => p.rows));
     onApply(Object.fromEntries(links.filter(l => want.has(l.row)).map(l => [l.row, l.challanNo])));
     setProps(null);

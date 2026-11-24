@@ -69,3 +69,11 @@ footer { margin-top: 24px; color: var(--muted); font-size: .8rem; } footer .meta
 .banner.ok-banner { background: var(--ok-bg); border-color: var(--ok); }
 .banner ol { margin: 6px 0 0; padding-left: 20px; } .banner ol li { margin: 4px 0; line-height: 1.45; }
 details.points > summary { cursor: pointer; } details.points > summary h3 { display: inline; }
+.setoff { display: inline-flex; flex-direction: column; gap: 3px; min-width: 150px; }
+.setoff .bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--line); }
+.setoff .bar i { display: block; height: 100%; }
+.setoff .bar .kept { background: var(--muted); } .setoff .bar .used { background: var(--accent); } .setoff .bar .left { background: var(--warn); }
+.split { display: inline-flex; gap: 6px; align-items: baseline; }
+button.small { padding: 3px 8px; font-size: .85rem; }
+ul.plain { list-style: none; padding-left: 0; margin: 6px 0; } ul.plain li { margin: 6px 0; }
+table.split-lines { width: 100%; margin: 10px 0; } table.split-lines input { width: 100%; }
