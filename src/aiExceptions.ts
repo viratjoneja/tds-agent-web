@@ -2,7 +2,7 @@
  * Phase 4b — AI proposals for the challan exceptions the rules left open.
  *
  * Only what the rules could not decide goes to Gemini, and only MASKED:
- *   challans: number, date, tax, interest, major head, section breakup, balance left
+ *   challans: number, date, tax, interest, major head, section breakup, balance left for this return (money kept for other returns is not offered)
  *   rows:     an id, month of deduction, section code, payee type (company / non-company), tax
  * No PAN, name, TAN, BSR code, challan serial or CIN is ever in the payload.
  *
@@ -29,7 +29,7 @@ export interface MaskedPayload {
 /** Masked payload: only exception rows are open; matched rows are shown for context with their challan. */
 export function maskedPayload(challans: ChallanIn[], rows: RowIn[], result: MatchResult): MaskedPayload {
   const st = new Map(result.rows.map(r => [r.row, r]));
-  const bal = new Map(result.challans.map(c => [c.no, c.balance]));
+  const bal = new Map(result.challans.map(c => [c.no, c.left]));
   const strip = (s: string) => s.replace(/\b[A-Z]{5}\d{4}[A-Z]\b/g, '[PAN]').replace(/\b[A-Z]{4}\d{5}[A-Z]\b/g, '[TAN]').replace(/\b\d{7}\b/g, '[BSR]');
   return {
     challans: challans.map(c => ({ challan: c.no, date: c.date, tax: c.tax, interest: c.interest, majorHead: c.majorHead, breakup: c.breakup, balance: bal.get(c.no) ?? c.tax })),
@@ -53,7 +53,7 @@ export function geminiExceptionRequest(payload: MaskedPayload) {
   return {
     systemInstruction: [
       'You help an Indian chartered accountant link TDS/TCS deduction rows to the challans (bank deposits) that paid them, for a quarterly e-TDS/TCS statement.',
-      'Rules: a challan can only pay tax deducted on or before its date. A challan cannot be used beyond its balance; if it has a section breakup, rows of a section use only that section\'s amount.',
+      'Rules: a challan can only pay tax deducted on or before its date. A challan cannot be used beyond its balance (already the amount left for THIS return - money kept for other returns such as 24Q salary is excluded and must never be used); if it has a section breakup, rows of a section use only that section\'s amount.',
       'Company payees are normally paid under major head 0020, others under 0021; report what was actually deposited (note any mismatch).',
       'Only propose links for rows whose challan is null. Never invent challans. If nothing fits, say so instead of forcing a link.',
       'If a proposal needs a rule to be bent (for example using an excess or duplicate challan to cover a later month), set needsApproval true and explain in plain words.',
@@ -89,7 +89,7 @@ export function checkProposals(json: string, challans: ChallanIn[], rows: RowIn[
   const status = new Map(result.rows.map(r => [r.row, r]));
   const dupChallans = new Set(result.exceptions.filter(e => e.kind === 'duplicate').flatMap(e => e.challans));
   // money still free per challan and per challan+section (after rows already matched or given)
-  const free = new Map(result.challans.map(c => [c.no, c.balance]));
+  const free = new Map(result.challans.map(c => [c.no, c.left]));
   const freeSec = new Map<string, number>();
   for (const c of challans) if (c.breakup) for (const [k, v] of Object.entries(c.breakup)) freeSec.set(`${c.no}|${k}`, v);
   for (const r of result.rows) if (r.challanNo && r.status !== 'exception') {

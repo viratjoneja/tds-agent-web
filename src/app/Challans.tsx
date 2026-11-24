@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { applyChallanMatches, matchChallans, readForMatching, type RowIn } from '../challanMatch.ts';
+import { applyChallanMatches, matchChallans, readForMatching, readOtherFormUse, setOtherForms, setOtherFormsFor, type OtherFormUse, type RowIn } from '../challanMatch.ts';
 import { addChallansToWorkbook, fromGemini, geminiChallanRequest, maskReceiptText, readChallanPdfs, type ChallanReceipt, type ReadResult } from '../challanPdf.ts';
 import { applyProposals, checkProposals, geminiExceptionRequest, maskedPayload, type CheckedProposal } from '../aiExceptions.ts';
 import { askGemini } from './ai.ts';
@@ -28,7 +28,17 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
   const chById = useMemo(() => new Map(m.challans.map(c => [c.no, c])), [m]);
   const useById = useMemo(() => new Map((res?.challans ?? []).map(c => [c.no, c])), [res]);
   const unlinked = res ? res.rows.filter(r => r.challanNo === null).length : 0;
+  const blocking = res ? res.exceptions.filter(e => e.kind === 'split-unknown' || e.kind === 'over-limit') : [];
+  const canApply = !!res && unlinked === 0 && blocking.length === 0;
   const setWorkbook = (b: Uint8Array) => { setWork(b); setOverrides({}); };
+  const setOther = (no: number, text: string) => {
+    const t = text.replace(/,/g, '').trim();
+    const v = t === '' ? null : Number(t);
+    if (v !== null && (!Number.isFinite(v) || v < 0)) { setMsg([{ cls: 'bad', text: `"${text}" is not an amount` }]); return; }
+    const cur = chById.get(no)?.otherForms ?? null;
+    if (cur === v) return;
+    try { setWork(setOtherFormsFor(work, no, v)); } catch (e) { setMsg([{ cls: 'bad', text: (e as Error).message }]); }
+  };
 
   const apply = () => {
     set({ linked: applyChallanMatches(work, res!.rows.filter(r => r.challanNo !== null).map(r => ({ row: r.row, challanNo: r.challanNo! }))) });
@@ -39,6 +49,7 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
     <section className="card">
       <h2>4. Challans</h2>
       <Receipts work={work} existing={m.challans.length} setWorkbook={setWorkbook} ai={ai} setMsg={setMsg} />
+      <OtherReturns work={work} setWork={setWork} setMsg={setMsg} />
       {msg.map(x => <p key={x.text} className={x.cls}>{x.text}</p>)}
 
       {m.problems.length > 0 && (
@@ -55,8 +66,13 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
             { key: 'no', label: '#' }, { key: 'date', label: 'Date' }, { key: 'bsr', label: 'BSR' }, { key: 'serial', label: 'Serial' },
             { key: 'majorHead', label: 'Major head' },
             { key: 'tax', label: 'Tax', num: true },
+            { key: 'other', label: 'Used by other forms', value: c => c.otherForms ?? '', render: c => (
+              <input className="code" key={`${c.no}-${c.otherForms ?? ''}`} defaultValue={c.otherForms ?? ''} inputMode="decimal"
+                placeholder={c.breakup ? 'receipt' : '?'} aria-label={`Used by other forms, challan ${c.no}`}
+                onBlur={e => setOther(c.no, e.target.value)} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} />) },
+            { key: 'limit', label: 'For this return', num: true, value: c => useById.get(c.no)?.forThisReturn ?? c.tax },
             { key: 'used', label: 'Used here', num: true, value: c => useById.get(c.no)?.usedHere ?? 0 },
-            { key: 'bal', label: 'Balance', num: true, value: c => useById.get(c.no)?.balance ?? 0 },
+            { key: 'left', label: 'Left for this return', num: true, value: c => useById.get(c.no)?.left ?? 0 },
             { key: 'interest', label: 'Interest paid', num: true },
             { key: 'idue', label: 'Interest due', num: true, value: c => useById.get(c.no)?.interestDue ?? 0 },
             { key: 'notes', label: 'Notes', value: c => (useById.get(c.no)?.notes ?? []).join('; ') },
@@ -89,13 +105,39 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
           ]} />
       </>}
 
+      {res && <p className="muted"><small>"Used by other forms": what the other return of this quarter (e.g. 24Q salary) claims from the challan. It is the limit for this return; blank = taken from the receipt's section split, or unknown. Enter 0 if no other return uses the challan.</small></p>}
       <div className="actions">
-        <button className="ghost" disabled={!res || unlinked > 0}
+        <button className="ghost" disabled={!canApply}
           onClick={() => download(applyChallanMatches(work, res!.rows.filter(r => r.challanNo !== null).map(r => ({ row: r.row, challanNo: r.challanNo! }))), `linked_${s.workbook!.name.replace(/\.xls$/i, '.xlsx')}`)}>
           Download workbook with challan links</button>
-        <button disabled={!res || unlinked > 0} onClick={apply}>{unlinked ? `${unlinked} row(s) still need a challan` : 'Apply challan links and build the return'}</button>
+        <button disabled={!canApply} onClick={apply}>{unlinked ? `${unlinked} row(s) still need a challan` : blocking.length ? 'Settle the challan split first' : 'Apply challan links and build the return'}</button>
       </div>
     </section>
+  );
+}
+
+function OtherReturns({ work, setWork, setMsg }:
+  { work: Uint8Array; setWork: (b: Uint8Array) => void; setMsg: (m: { cls: string; text: string }[]) => void }) {
+  const onFiles = async (files: FileList | null) => {
+    if (!files?.length) return;
+    const uses: OtherFormUse[] = [], bad: string[] = [];
+    for (const f of [...files]) {
+      const r = readOtherFormUse(await readBytes(f));
+      if (r.problems.length) bad.push(`${f.name}: ${r.problems.join('; ')}`); else uses.push(...r.uses);
+    }
+    if (!uses.length) { setMsg(bad.map(text => ({ cls: 'bad', text }))); return; }
+    const out = setOtherForms(work, uses);
+    setWork(out.bytes);
+    setMsg([
+      { cls: 'ok', text: `Used by other forms set from ${files.length} file(s): ${out.matched.map(x => `#${x.no} Rs ${inr(x.amount, 0)}`).join(', ') || 'no challan on this sheet matched'}.` },
+      ...(out.notOnSheet.length ? [{ cls: 'muted', text: `Not on this return's Challans sheet: ${out.notOnSheet.map(u => `${u.serial} of ${u.date} (Rs ${inr(u.amount, 0)})`).join(', ')}.` }] : []),
+      ...bad.map(text => ({ cls: 'bad', text }))]);
+  };
+  return (
+    <div className="sub-card">
+      <label className="file">The other return of this quarter, e.g. the 24Q (Compu-TDS sheet) or this tool's input workbook for that form (optional - gives exactly how much of each challan it uses; best source for the split)
+        <input type="file" accept=".xls,.xlsx" multiple onChange={e => onFiles(e.target.files)} /></label>
+    </div>
   );
 }
 

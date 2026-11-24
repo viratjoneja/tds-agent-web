@@ -46,15 +46,19 @@ r = matchChallans([ch(1, '2026-08-07', 5000, { majorHead: '0020' }), ch(2, '2026
   [row(CO, '1031', '2026-07-31', 7000), row(IND, '1023', '2026-07-31', 10000)]);
 check(links(r) === '2,2' && /major head 0021 although the payee needs 0020/.test(r.rows[0].reason), 'company row too big for the 0020 challan: put in the 0021 challan with an SOP rule 11 note');
 
-// 3. salary share on a shared challan is kept for Form 138 - and used only as a last resort, with a note
+// 3. salary share on a shared challan is kept for Form 138 - never borrowed (v2.1)
 n = 1;
 const sal = ch(1, '2026-08-07', 100000, { majorHead: '0021', breakup: { 1002: 90000, 1023: 10000 } });
 r = matchChallans([sal], [row(IND, '1023', '2026-07-31', 6000), row(IND, '1023', '2026-07-31', 4000)]);
 check(links(r) === '1,1' && r.challans[0].balance === 90000 && !/check the other return/.test(r.challans[0].notes.join()), 'rows within the challan\'s own share: salary share left untouched');
 n = 1;
 r = matchChallans([sal], [row(IND, '1023', '2026-07-31', 10000), row(IND, '1023', '2026-07-31', 2000)]);
-check(links(r) === '1,1' && /share for section 1002 \(another return\)/.test(r.rows[1].reason) && /check the other return/.test(r.challans[0].notes.join()),
-  'rows beyond the challan\'s own share: salary share used as a last resort, flagged on the row and the challan');
+check(links(r) === '1,exception', `rows beyond the challan's own share: salary share not borrowed, the row is left for a decision (${links(r)})`);
+check(/receipt share for section 1002/.test(r.rows[1].reason) && /Used by other forms/.test(r.rows[1].reason), 'the open row points at the salary share and "Used by other forms"');
+n = 1;
+r = matchChallans([{ ...sal, otherForms: 88000 }], [row(IND, '1023', '2026-07-31', 10000), row(IND, '1023', '2026-07-31', 2000)]);
+check(links(r) === '1,1' && r.challans[0].forThisReturn === 12000 && r.challans[0].limitFrom === 'other-forms' && !r.exceptions.length,
+  '24Q used only 88,000 of the 90,000 salary share: "Used by other forms" = 88,000 frees 2,000 for this return, no exception');
 
 // 4. section breakup different from the rows: allowed, noted on the challan
 n = 1;

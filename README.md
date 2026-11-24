@@ -2,13 +2,13 @@
 
 Web app that turns a filled input workbook into a Protean (NSDL) e-TDS/TCS return text file for Forms 138, 140 and 143: section codes worked out from the working, challans matched and split automatically, a review before the FVU, and FVU results explained row by row. Everything runs in the browser; client files are never uploaded.
 
-**Engine fingerprint for this release: `ecea70457ab6`** — the app's footer must show the same value and "self-test passed". If it does not, the deployment is not running the tested engine.
+**Engine fingerprint for this release: `875d9f6b55c3`** — the app's footer must show the same value and "self-test passed". If it does not, the deployment is not running the tested engine.
 
 ## Deploy with Google AI Studio (Build)
 
 1. In AI Studio → Build, click **+** in the prompt box → **Import from GitHub**, connect your GitHub account and choose `viratjoneja/tds-agent-web`.
 2. Deploy (Cloud Run) as usual. For the optional AI buttons, set the secret **`GEMINI_API_KEY`** (a billing-enabled key, so Google does not use the data for training). Optional `GEMINI_MODEL` (default `gemini-flash-latest`).
-3. Open the app and check the footer: engine `ecea70457ab6`, **self-test passed**. Quick test: a workbook whose Tax column is `=Amount*Rate` (no /100) must stop at step 4 with "Tax looks like Amount x Rate % without dividing by 100".
+3. Open the app and check the footer: engine `875d9f6b55c3`, **self-test passed**. Quick test: a workbook whose Tax column is `=Amount*Rate` (no /100) must stop at step 4 with "Tax looks like Amount x Rate % without dividing by 100".
 4. Use AI Studio only for look and feel. Do not let it change the engine files (listed in `engine-files.mjs`); see `AGENTS.md`. After each new release here, pull the latest from GitHub in AI Studio's GitHub settings.
 
 ## Run it anywhere else (Cloud Run, a VM, your PC)
@@ -55,4 +55,5 @@ Node 22.6 or later: `npm install`, `npm test` (engine), `npm run typecheck`, `np
 | 4.5 | Automatic challan split: month plan (interest shows the month paid late), same-date 0020/0021 pairs, overflow to top-up challans, salary share kept; Tax column check (missing /100) | done (1.5.0) |
 | 6 | Full app in the repo (screens, Gemini route, self-test, engine fingerprint) for Import from GitHub | done (2.0.0) |
 | 6.1 | Rate % cells formatted as Excel percentages (0.02 shown as 2%) read as 2 on upload | done (2.0.1) |
+| 6.2 | Strict challan limit for this return: "Used by other forms" (read from the 24Q Compu-TDS sheet or typed in) or the receipt split; salary money never borrowed; split-unknown blocks until settled; tax rounded to rupees; never over a challan by even Re 1 | done (2.1.0) |
 | 5 | Tests on every rule; local checks on real Q2 cases | ongoing |

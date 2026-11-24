@@ -6,7 +6,7 @@ import { makeTemplateFull } from '../challanMatch.ts';
 import { runSelfTest, type SelfTest } from './selfTest.ts';
 import { aiAvailable } from './ai.ts';
 import { download, readBytes, readLatin1 } from './util.ts';
-import { normaliseRates } from './rates.ts';
+import { normaliseRates, roundTax } from './rates.ts';
 import { SectionsStep } from './Sections.tsx';
 import { ChallansStep } from './Challans.tsx';
 import { ReviewStep, DownloadStep, FvuStep } from './Review.tsx';
@@ -148,8 +148,8 @@ function UploadStep({ s, set, next }: StepProps) {
     if (!f) return;
     setErr([]); setNote([]);
     let bytes: Uint8Array = await readBytes(f);
-    let pctRows = 0;
-    try { ({ bytes, rows: pctRows } = normaliseRates(bytes)); }
+    let pctRows = 0, roundRows = 0;
+    try { ({ bytes, rows: pctRows } = normaliseRates(bytes)); ({ bytes, rows: roundRows } = roundTax(bytes)); }
     catch (e) { setErr([`Could not read the workbook: ${(e as Error).message}`]); return; }
     let deductor: Deductor | null = null;
     try { deductor = readInputWorkbook(bytes, s.form, s.quarter).deductor; }
@@ -158,6 +158,7 @@ function UploadStep({ s, set, next }: StepProps) {
     set({ workbook: { name: f.name, bytes }, deductor: d, fileName: s.fileName || (d ? `${d.tan.slice(0, 3)}${s.form}Q${s.quarter}.txt` : '') });
     setNote([
       ...(pctRows ? [`Rate % was formatted as a percentage in Excel on ${pctRows} row(s) - read as the rate itself (e.g. 2% as 2, not 0.02).`] : []),
+      ...(roundRows ? [`Tax had paise on ${roundRows} row(s) - rounded to the nearest rupee (TDS is deducted and deposited in whole rupees). Check against the books if the tax actually deducted was different.`] : []),
       ...(deductor ? [] : ['The Deductor sheet is empty - upload last quarter\'s .fvu below, or fill the sheet.'])]);
   };
   const onFvu = async (f?: File) => {

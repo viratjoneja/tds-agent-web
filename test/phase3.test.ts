@@ -44,7 +44,7 @@ n = 1;
 r = matchChallans([ch(1, '2026-08-07', 300000, { majorHead: '0021', breakup: { 1023: 80000, 1073: 180000, 1002: 30000, 1027: 10000 } })],
   [row(FIRM, '1073', '2026-07-31', 180000)]);
 check(linkOf(r) === '1' && /challan for 2026-07/.test(r.rows[0].reason), 'TCS row matched to the challan for its month (shared challan)');
-check(r.challans[0].balance === 120000 && /not used by this return/.test(r.challans[0].notes[0]), `balance left for the other forms: Rs ${r.challans[0].balance}`);
+check(r.challans[0].balance === 120000 && r.challans[0].left === 0 && /kept for section 1002, 1023, 1027/.test(r.challans[0].notes.join()),`balance left for the other forms: Rs ${r.challans[0].balance}`);
 
 // 4. one challan per section (one challan for each section): exact amounts decide, even without a breakup
 n = 1;
