@@ -140,8 +140,8 @@ export function FvuStep({ s }: StepProps) {
       {stats && (stats.length ? <div className="banner error"><b>FVU totals differ from the return:</b><ul>{stats.map(x => <li key={x}>{x}</li>)}</ul></div>
         : <p className="ok">FVU totals match the return.</p>)}
       {issues.length > 0 && <Table rows={issues} total={false} rowClass={i => (i.kind === 'error' ? 'row-bad' : 'row-warn')} cols={[
-        { key: 'kind', label: 'Type' }, { key: 'code', label: 'Code' }, { key: 'where', label: 'Where' },
-        { key: 'description', label: 'FVU says' }, { key: 'hint', label: 'Usually fixed by' }]} />}
+        { key: 'kind', label: 'Type' }, { key: 'code', label: 'Code' }, { key: 'where', label: 'Where', wrap: true },
+        { key: 'description', label: 'FVU says', wrap: true }, { key: 'hint', label: 'Usually fixed by', wrap: true }]} />}
     </section>
   );
 }

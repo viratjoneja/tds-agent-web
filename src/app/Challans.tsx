@@ -59,6 +59,8 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
         <details className="banner warn"><summary>{m.warnings.length} row(s) where Tax differs from Amount x Rate % - fine if it is the tax actually deducted</summary>
           <ul>{m.warnings.map(p => <li key={p}>{p}</li>)}</ul></details>)}
 
+      {res && <StatusSummary res={res} challans={m.challans} rows={m.rows} unlinked={unlinked} canApply={canApply} />}
+
       {res && <>
         <h3>Challans ({m.challans.length})</h3>
         <Table rows={m.challans} rowClass={c => ((useById.get(c.no)?.interestDue ?? 0) > c.interest + 1 ? 'row-bad' : (useById.get(c.no)?.balance ?? 0) > 1 ? 'row-warn' : '')}
@@ -75,12 +77,14 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
             { key: 'left', label: 'Left for this return', num: true, value: c => useById.get(c.no)?.left ?? 0 },
             { key: 'interest', label: 'Interest paid', num: true },
             { key: 'idue', label: 'Interest due', num: true, value: c => useById.get(c.no)?.interestDue ?? 0 },
-            { key: 'notes', label: 'Notes', value: c => (useById.get(c.no)?.notes ?? []).join('; ') },
+            { key: 'notes', label: 'Notes', wrap: true, value: c => (useById.get(c.no)?.notes ?? []).join('; ') },
           ]} />
 
         {res.exceptions.length > 0 && <>
-          <h3>Points needing a decision ({res.exceptions.length})</h3>
-          <div className="cards">{res.exceptions.map((e, i) => <div key={i} className={`point ${e.kind}`}><b>{e.kind.replace('-', ' ')}</b> {e.message}</div>)}</div>
+          <details className="points" open={res.exceptions.length <= 3}>
+            <summary><h3>Points needing a decision ({res.exceptions.length})</h3></summary>
+            <div className="cards">{res.exceptions.map((e, i) => <div key={i} className={`point ${e.kind}`}><b>{e.kind.replace('-', ' ')}</b> {shortMessage(e.message)}</div>)}</div>
+          </details>
           {ai && unlinked > 0 && <AiProposals challans={m.challans} rows={rowsIn} res={res} onApply={links => setOverrides(o => ({ ...o, ...links }))} />}
         </>}
 
@@ -99,9 +103,9 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
                 <select value={r.challanNo ?? ''} aria-label={`Challan for row ${r.row}`}
                   onChange={e => setOverrides(o => { const n = { ...o }; if (e.target.value) n[r.row] = Number(e.target.value); else delete n[r.row]; return n; })}>
                   <option value="">-- choose --</option>
-                  {m.challans.map(c => <option key={c.no} value={c.no}>#{c.no} {c.date} Rs {inr(c.tax, 0)} (left {inr(useById.get(c.no)?.balance ?? c.tax, 0)})</option>)}
+                  {m.challans.map(c => <option key={c.no} value={c.no}>#{c.no} {c.date} Rs {inr(c.tax, 0)} (left for this return {inr(useById.get(c.no)?.left ?? c.tax, 0)})</option>)}
                 </select>) : <>#{r.challanNo} {chById.get(r.challanNo!)?.date}</>) },
-            { key: 'reason', label: 'Why', render: r => <small>{r.reason}</small> },
+            { key: 'reason', label: 'Why', wrap: true, render: r => <small>{r.reason}</small> },
           ]} />
       </>}
 
@@ -114,6 +118,48 @@ export function ChallansStep({ s, set, next, ai }: StepProps) {
       </div>
     </section>
   );
+}
+
+/** The engine's long "no room" message without the parts the summary above already says. */
+const shortMessage = (msg: string) => msg
+  .replace(/ A short deposit, a challan missing from the sheet, or a wrong split with another return - needs a decision\./, '')
+  .replace(/ Money kept for other returns, not used:.*$/, '');
+
+type Res = NonNullable<ReturnType<typeof matchChallans>>;
+/** One plain summary of what stands between the user and the return, with the next action. Display only - the rules are in the engine. */
+function StatusSummary({ res, challans, rows, unlinked, canApply }:
+  { res: Res; challans: ReturnType<typeof readForMatching>['challans']; rows: RowIn[]; unlinked: number; canApply: boolean }) {
+  const byNo = new Map(challans.map(c => [c.no, c]));
+  const taxOf = new Map(rows.map(r => [r.row, r.tax]));
+  const openTax = res.rows.filter(r => r.challanNo === null).reduce((a, r) => a + (taxOf.get(r.row) ?? 0), 0);
+  const label = (no: number) => `#${no} (${byNo.get(no)?.serial}, ${byNo.get(no)?.date})`;
+  const kept = res.challans.filter(u => u.tax - u.forThisReturn > 1 && u.limitFrom === 'breakup');
+  const unknown = res.exceptions.filter(e => e.kind === 'split-unknown').flatMap(e => e.challans);
+  const over = res.exceptions.filter(e => e.kind === 'over-limit').flatMap(e => e.challans);
+  const others = res.exceptions.filter(e => !['too-large', 'no-challan', 'split-unknown', 'over-limit'].includes(e.kind)).length;
+  if (canApply) return (
+    <div className="banner ok-banner"><b>All {res.rows.length} rows have a challan, and no challan is used beyond its share for this return.</b>
+      {others > 0 && <> {others} point(s) below to check before you go on.</>}</div>);
+  return (
+    <div className="banner error"><b>Before the return can be built:</b>
+      <ol>
+        {unlinked > 0 && <li>
+          <b>{unlinked} row(s), Rs {inr(openTax, 0)} of tax, have no room in the challans.</b>{' '}
+          {kept.length > 0
+            ? <>The challan receipts keep {kept.map(u => `Rs ${inr(u.tax - u.forThisReturn, 0)} on ${label(u.no)}`).join(', ')} for salary or another return.
+                If the 24Q (or other return) used less than that, <b>upload the 24Q sheet in the box above</b>, or type what it used in <b>"Used by other forms"</b> for that challan.
+                Otherwise a challan is missing or the deposit was short - choose a challan for these rows in the table below.</>
+            : <>A challan may be missing from the sheet, or the deposit was short. Add the challan (receipt PDFs above), or choose one for these rows in the table below.</>}
+        </li>}
+        {unknown.length > 0 && <li>
+          <b>Not known whether {unknown.map(label).join(", ")} also {unknown.length > 1 ? "pay" : "pays"} salary or another return</b> (money is left on them).
+          Upload the challan receipts or the 24Q sheet above, or type in <b>"Used by other forms"</b> what the other return uses - <b>0</b> if none.
+        </li>}
+        {over.length > 0 && <li>
+          <b>{over.map(label).join(', ')} {over.length > 1 ? 'are' : 'is'} used beyond the share for this return.</b> Move rows to another challan, or correct "Used by other forms".
+        </li>}
+      </ol>
+    </div>);
 }
 
 function OtherReturns({ work, setWork, setMsg }:

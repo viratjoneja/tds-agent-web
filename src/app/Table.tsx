@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { inr } from './util.ts';
 
-export interface Col<T> { key: string; label: string; num?: boolean; render?: (r: T) => ReactNode; value?: (r: T) => unknown }
+export interface Col<T> { key: string; label: string; num?: boolean; wrap?: boolean; render?: (r: T) => ReactNode; value?: (r: T) => unknown }
 
 /** Sortable, filterable table with a totals row for number columns. */
 export function Table<T extends object>({ rows, cols, rowClass, total = true, filter = true }:
@@ -24,7 +24,7 @@ export function Table<T extends object>({ rows, cols, rowClass, total = true, fi
       <div className="scroll">
         <table>
           <thead><tr>{cols.map(c => (
-            <th key={c.key} className={c.num ? 'num' : ''}>
+            <th key={c.key} className={c.num ? 'num' : c.wrap ? 'wrap' : ''}>
               <button className="th" onClick={() => setSort(s => (s?.key === c.key ? { key: c.key, dir: s.dir === 1 ? -1 : 1 } : { key: c.key, dir: 1 }))}>
                 {c.label}{sort?.key === c.key ? (sort.dir === 1 ? ' ▲' : ' ▼') : ''}
               </button>
@@ -32,7 +32,7 @@ export function Table<T extends object>({ rows, cols, rowClass, total = true, fi
           <tbody>
             {shown.map((r, i) => (
               <tr key={i} className={rowClass?.(r) ?? ''}>
-                {cols.map(c => <td key={c.key} className={c.num ? 'num' : ''}>{c.render ? c.render(r) : c.num ? inr(val(r, c)) : String(val(r, c) ?? '')}</td>)}
+                {cols.map(c => <td key={c.key} className={c.num ? 'num' : c.wrap ? 'wrap' : ''}>{c.render ? c.render(r) : c.num ? inr(val(r, c)) : String(val(r, c) ?? '')}</td>)}
               </tr>))}
           </tbody>
           {total && shown.length > 1 && cols.some(c => c.num) && (

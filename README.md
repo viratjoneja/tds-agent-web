@@ -64,4 +64,5 @@ Node 22.6 or later: `npm install`, `npm test` (engine), `npm run typecheck`, `np
 | 6 | Full app in the repo (screens, Gemini route, self-test, engine fingerprint) for Import from GitHub | done (2.0.0) |
 | 6.1 | Rate % cells formatted as Excel percentages (0.02 shown as 2%) read as 2 on upload | done (2.0.1) |
 | 6.2 | Strict challan limit for this return: "Used by other forms" (read from the 24Q Compu-TDS sheet or typed in) or the receipt split; salary money never borrowed; split-unknown blocks until settled; tax rounded to rupees; never over a challan by even Re 1 | done (2.1.0) |
+| 6.3 | Challans step: one summary of what blocks the return and the next action (shortfall, challan keeping salary money); short, foldable decision cards; compact tables | done (2.1.1) |
 | 5 | Tests on every rule; local checks on real Q2 cases | ongoing |

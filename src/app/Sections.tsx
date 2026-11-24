@@ -47,7 +47,7 @@ export function SectionsStep({ s, set, next }: StepProps) {
               <input className="code" value={choice[r.row] ?? ''} placeholder="4-digit code" maxLength={4} aria-label={`Section code for row ${r.row}`}
                 onChange={e => setChoice(c => ({ ...c, [r.row]: e.target.value.trim() }))} />
             ) : <span title={label(codeOf(r))}>{codeOf(r)}</span> },
-          { key: 'why', label: 'Why', value: r => r.result.reason, render: r => (
+          { key: 'why', label: 'Why', wrap: true, value: r => r.result.reason, render: r => (
             <span>{r.result.reason}{r.result.rateNote && <><br /><span className="warn">{r.result.rateNote}</span></>}
               {choice[r.row] && SECTION_MAP[choice[r.row]] && <><br /><small>{label(choice[r.row])}</small></>}</span>) },
         ]} />
